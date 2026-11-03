@@ -237,7 +237,8 @@ Always build the preview:
 
 Then:
 
-- `--dry-run`: print the preview and go to Step 9. Do not ask anything.
+- `--dry-run`: print the preview and go to Step 9. Do not ask anything, and do not read `references/posting.md`:
+  nothing is posted.
 - `--auto`: print the preview and go to Step 8.
 - Otherwise: print the preview, ask the user to confirm, and wait. If they drop or reword findings, apply it and
   show the table again. If they decline, go to Step 9 with `posted` `false`. If you cannot ask, follow

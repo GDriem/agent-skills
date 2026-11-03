@@ -35,7 +35,9 @@ Content, in the review language:
    `--dry-run`, each with its `path:line`.
 4. Anything that failed to post (422s moved to the body, failed replies).
 5. CI status and residual risk.
-6. `pr-ready` with verdict `READY` only: the approval comment block for the user to paste.
+6. `pr-ready` with verdict `READY` only: the approval comment block for the user to paste, with the line
+   `<!-- approval:start -->` right before it and `<!-- approval:end -->` right after it, each on its own line.
+   Batch runs copy exactly what is between them into their summary, so put nothing else inside.
 
 ## 2. Final line
 

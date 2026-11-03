@@ -207,7 +207,8 @@ Build the review of pending items and new gaps:
 
 Then:
 
-- `--dry-run`: print the preview and go to Step 6. Do not ask anything.
+- `--dry-run`: print the preview and go to Step 6. Do not ask anything, and do not read `references/posting.md`:
+  nothing is posted.
 - `--auto`: post.
 - Otherwise: ask the user to confirm and wait; apply any edits; if they decline, go to Step 6 with `posted`
   `false`. If you cannot ask, follow "No one to ask".
