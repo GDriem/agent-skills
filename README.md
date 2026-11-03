@@ -68,7 +68,28 @@ pr-ready 401
 pr-review-all                    # todas las abiertas que no son draft
 pr-review-all 401,405,410        # solo esas (útil para reintentar fallidas)
 pr-review-all --repo owner/repo 12,15
+pr-review-all --dry-run --parallel 2 --model <modelo>   # 2 agentes a la vez, modelo propio para cada PR
+pr-ready-all                     # pr-ready en lote; los LISTA traen su comentario de aprobación en summary.md
 ```
+
+Sin `--dry-run`, una `-all` pide confirmación una sola vez para todo el lote (cada agente corre con `--auto`
+y publica). `--parallel 1` corre las PRs una detrás de otra.
+
+### `bin/pr-batch`
+
+El mismo lote sin subagentes: una sesión headless por PR. Sirve para harnesses sin subagentes, para cron o CI,
+y lo usa la `-all` como respaldo.
+
+```bash
+bin/pr-batch --harness claude --dry-run 401,405          # o --harness codex
+bin/pr-batch --harness codex --skill pr-ready --parallel 2 all
+bin/pr-batch --harness claude --yes --repo owner/repo 12  # publica; --yes hace falta si stdin no es una terminal
+bin/pr-batch --harness claude --retry-failed ~/.agent-skills/runs/2026-11-02T10-00   # solo las que dieron ERROR
+```
+
+Deja `summary.json` y `summary.md` en el directorio del lote, imprime la tabla y sale con código 1 si alguna PR
+terminó en `ERROR`. Copilot, Gemini y Cursor todavía no están implementados en el runner. Costo medido en
+[docs/token-cost.md](docs/token-cost.md).
 
 ### Cómo funcionan las versiones `-all`
 
@@ -83,7 +104,9 @@ PR completa y termina con un resultado corto y fijo, una línea de JSON (contrat
 ```
 
 El reporte completo se queda en `~/.agent-skills/runs/<fecha>/<skill>-<n>.md` (o bajo `$AGENT_SKILLS_RUNS`), nunca
-dentro del repo revisado. El agente principal nunca ve diffs ni archivos de otra PR, solo esas líneas. Cómo se
+dentro del repo revisado. El agente principal nunca ve diffs ni archivos de otra PR, solo esas líneas. Al final
+escribe `summary.json` (las líneas de todas las PRs) y `summary.md` (la tabla) en el mismo directorio que los
+reportes. Cómo se
 lanza cada agente depende del harness:
 
 | Harness | Un agente por PR con |

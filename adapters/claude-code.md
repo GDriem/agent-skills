@@ -34,6 +34,44 @@ what was tested in this repo is marked **probado**, the rest comes from the docs
 | Ask the user and wait | `AskUserQuestion`, or a plain question in the reply and wait for the next turn. Not available under `claude -p`: the skill then follows "No one to ask" |
 | Launch a fresh agent with its own context (the `-all` skills) | `Workflow` if the installation has it (one `agent()` per PR, results by schema), otherwise `Agent` (one per PR, up to `--parallel` at a time; subagents return only their final message) |
 
+## Batch skills (`pr-review-all`, `pr-ready-all`)
+
+- **Sibling path.** The skill expansion starts with the skill's base directory; `realpath` of
+  `<base>/../pr-review/SKILL.md` gives the absolute path. A subagent reads it with `Read` whether the path is the
+  symlink under `.claude/skills` or the real file in this repo, also under `claude -p` with only `Read` allowed
+  (**probado**). Invoking the skill by name stays as the fallback in the prompt, but was not needed.
+- **`Workflow`** (when the installation has it): one script, a pool of `--parallel` workers. There is no
+  concurrency option per call (the tool caps a workflow at ~10 agents), so the pool limits it. Scripts cannot run
+  shell commands, so the per-PR re-check is left to the agent's Step 0. Pass the data through `args`:
+
+  ```js
+  export const meta = { name: 'pr-batch', description: 'One fresh agent per PR', phases: [{ title: 'PRs' }] }
+  const { prs, prompts, parallel, model } = args      // prompts: { "<n>": "<prompt from batch.md>" }
+  const queue = [...prs], lines = {}
+  async function worker() {
+    while (queue.length) {
+      const n = queue.shift()
+      const out = await agent(prompts[n], { label: `#${n}`, phase: 'PRs', ...(model ? { model } : {}) })
+      lines[n] = out ? String(out).trim().split('\n').pop() : null
+    }
+  }
+  await Promise.all(Array.from({ length: parallel }, worker))
+  return prs.map(n => ({ pr: n, line: lines[n] }))
+  ```
+
+  The orchestrator then checks all the lines at once (Step 7 of `batch.md`).
+- **`Agent`** (no `Workflow`): up to `--parallel` `Agent` calls in one message, each with the prompt from
+  `batch.md`; only the subagent's final message comes back, so the orchestrator keeps just its last line. Re-check
+  each PR with `gh pr view` before its wave.
+- Headless (`claude -p "/pr-review-all …"`) needs `Agent` (and `Workflow` if used) in `--allowedTools`, plus
+  `Bash(realpath *)` and, for `pr-ready-all`, `Bash(sed *)`; subagents inherit the allowed tools, and the runs
+  directory goes in `--add-dir`. **Probado** with `--dry-run` on two PRs: with both `Agent` and `Workflow`
+  allowed, the orchestrator chose two background `Agent` calls (`general-purpose`), re-checked each PR with
+  `gh pr view`, read no diff, and wrote `summary.json`/`summary.md` and the batch line. Nothing was posted.
+- Token split: `--output-format stream-json --verbose` tags subagent messages with `parent_tool_use_id`; group by
+  `message.id` (each content block repeats the message). `modelUsage`/`total_cost_usd` in the final event cover
+  parent and children together.
+
 ## Headless (for `bin/pr-batch`)
 
 ```bash

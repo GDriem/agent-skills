@@ -40,6 +40,24 @@ was tested in this repo is marked **probado**, the rest comes from the docs cite
 thread from the session store, which `--ephemeral` does not write (**probado**). Do not combine the `-all`
 skills with `--ephemeral`.
 
+## Batch skills (`pr-review-all`, `pr-ready-all`)
+
+- **Sibling path.** The session lists every skill with the path of its `SKILL.md`; `realpath` of
+  `<dir>/../pr-review/SKILL.md` gives the real file, and the child reads it with the shell (reads are not limited
+  by the sandbox) (**probado**).
+- **One child per PR**: `spawn_agent` with `task_name` (`review_<n>`), `fork_turns: "none"`, the prompt from
+  `batch.md` as `message`, and `model` when `--model` was given (**probado**: the orchestrator passed
+  `fork_turns: "none"` on its own, and the children's rollouts record `thread_spawn` with the parent's id and
+  `depth: 1`). Keep at most `--parallel` alive; spawn the next when one finishes.
+- **Waiting**: `wait_agent` with a long `timeout_ms`. In the first smoke the orchestrator polled with
+  `timeout_ms: 10000` and one `sleep`, which cost five extra turns of ~30 k tokens each; `batch.md` now asks for
+  the longest wait.
+- Works under `codex exec` (**probado** with `$pr-review-all … --dry-run` and `$pr-ready-all … --dry-run`), as
+  long as it is not `--ephemeral`. Add the runs directory with `--add-dir` so the orchestrator and the children
+  can write there.
+- Token counts per thread: each child has its own rollout under `$CODEX_HOME/sessions/…`; the last
+  `token_count` event holds the totals. The `turn.completed` event of `--json` only covers the parent.
+
 ## Headless (for `bin/pr-batch`)
 
 ```bash

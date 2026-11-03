@@ -47,15 +47,17 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 
 - [x] Adapters `adapters/claude-code.md` y `adapters/codex.md`, con lo "sin confirmar" de la matriz probado.
 
-- [ ] `pr-review-all` y `pr-ready-all` con un solo cuerpo y una sección por harness:
-  - Claude Code: `Workflow` (lo que ya hay), con `Agent` como respaldo si `Workflow` no está disponible.
-  - Codex: `multi_agent`, con `codex exec` por PR como respaldo.
+- [x] `pr-review-all` y `pr-ready-all` con un solo cuerpo (`references/batch.md`, idéntico en las dos) y una
+      sección por harness:
+  - Claude Code: `Workflow` o `Agent` (probado: en `-p` elige `Agent` en background).
+  - Codex: `multi_agent` con `fork_turns:"none"` (probado), con `bin/pr-batch` como respaldo.
   - Copilot CLI (`/fleet`) y Cursor (Task): subagentes nativos, documentados con contexto propio y en paralelo.
   - Gemini CLI y Copilot en VS Code: `bin/pr-batch` hasta probar que sus subagentes corren en paralelo.
-- [ ] `bin/pr-batch --harness <h> [--parallel N] [--model M] <prs>`: lanza una sesión headless por PR, junta los
-      JSON y escribe el resumen del lote. Es el respaldo universal y también sirve desde cron o CI.
-- [ ] Ahorro de tokens: el orquestador nunca lee diffs, el modelo por PR se puede configurar, y los reintentos
-      solo corren las fallidas.
+- [x] `bin/pr-batch --harness <h> [--parallel N] [--model M] <prs>`: lanza una sesión headless por PR, junta los
+      JSON y escribe el resumen del lote. Es el respaldo universal y también sirve desde cron o CI. Claude y
+      Codex implementados; Copilot, Gemini y Cursor responden "no implementado aún" (Sesión 6).
+- [x] Ahorro de tokens: el orquestador nunca lee diffs, el modelo por PR se puede configurar, y los reintentos
+      solo corren las fallidas. Medido en [docs/token-cost.md](docs/token-cost.md).
 
 ### Fase 3: instalación (Sesión 4)
 
@@ -106,3 +108,12 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
   `~/.codex/skills` (el port viejo choca con la skill nueva, Fase 3 lo retira primero); `codex exec` necesita
   stdin cerrado; `claude -p` niega comandos compuestos aunque empiecen por `gh`. Enmienda al ADR: reporte
   `<skill>-<n>.md` y `--run-dir`. Las `-all` pasan a la Sesión 3 (`~/.claude/prompts/agent-skills-sesion3.md`).
+- **2026-11-02 (Sesión 3):** Fase 2 cerrada. `pr-review-all` y `pr-ready-all` (cuerpo compartido en
+  `references/batch.md`), `bin/pr-batch` (bash 3.2, `xargs -P`, `--retry-failed`, `--yes` para lotes que
+  publican) y `docs/token-cost.md`. El contrato marca el bloque de aprobación con `<!-- approval:start/end -->`
+  para que el lote lo copie del reporte, y `--dry-run` ya no carga `posting.md`. Smokes `--dry-run` sobre dos PRs
+  reales: `pr-review-all` en los dos harnesses, `pr-ready-all` en Codex, `bin/pr-batch` con los dos; nada
+  publicado. Probado: un hijo de Claude Code lee la skill hermana por ruta absoluta (symlink o real) también en
+  `-p`; Codex pasa `fork_turns:"none"` solo con lo que dice `batch.md`. Ajuste tras medir: esperar a los hijos sin
+  sondear y validar las líneas en una pasada (−46 % de input en el orquestador de Codex). Sigue la Sesión 4
+  (`~/.claude/prompts/agent-skills-sesion4.md`): `install.sh` y retirar las copias viejas.
