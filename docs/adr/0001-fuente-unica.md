@@ -6,11 +6,11 @@
   `orchestrate` y `bin/agent-batch` (§4 bis). Enmienda del 2026-11-03: tier por tamaño, modo ligero y escalado
   en `pr-review-all` (§4 ter).
 - **Fecha:** 2026-11-02
-- **Contexto previo:** [inventario](../inventory.md), [matriz de harnesses](../harness-matrix.md)
+- **Contexto previo:** [matriz de harnesses](../harness-matrix.md)
 
 ## Contexto
 
-Las skills de PR existen en tres copias que ya divergieron (ver el inventario). La copia de Claude Code solo
+Las skills de PR existían en tres copias que ya divergieron. La copia de Claude Code solo
 funciona en Claude Code; el port a Codex prohíbe subagentes en las versiones por lote, así que diez PRs comparten
 un contexto. Queremos que las mismas skills corran en Claude Code, Codex, Copilot (CLI y VS Code), Gemini CLI y
 Cursor, y que cada PR de un lote corra aislada.

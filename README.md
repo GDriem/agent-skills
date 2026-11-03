@@ -15,7 +15,15 @@ aparte con su propio contexto**, así que la décima PR se revisa con el context
 | Codex | **Probado**: lo mismo, con `codex exec` |
 | GitHub Copilot (CLI y VS Code), Gemini CLI, Cursor | Documentado, pendiente: la instalación los contempla, pero nada se probó y los runners todavía no los soportan |
 
-Qué se probó y cómo, en [`adapters/`](adapters) (lo marcado **probado**) y en [PLAN.md](PLAN.md).
+Qué se probó y cómo, en [`adapters/`](adapters) (lo marcado **probado**).
+
+Pendiente, sin fecha:
+
+- Copilot, Gemini y Cursor: probarlos, sumarlos a `bin/pr-batch` y `bin/agent-batch` y escribir sus adapters. Lo
+  que falta confirmar de cada uno está en [docs/harness-matrix.md](docs/harness-matrix.md).
+- Correr el orquestador de las `-all` en un modelo más barato: con el tier por tamaño, en Claude Code es la mayor
+  parte del costo del lote.
+- Un modo ligero para `pr-ready`, para que `pr-ready-all` también use clases por tamaño.
 
 ## Skills
 
@@ -204,5 +212,5 @@ bin/pr-batch                 runner universal: una sesión headless por PR
 bin/agent-batch              runner universal de orchestrate: una sesión headless por tarea, en olas
 bin/lib/batch.sh             lo que comparten los dos runners (arranque headless por harness, run dir)
 install.sh                   instala en cada harness, detecta drift y retira copias viejas con backup
-docs/                        inventario, matriz de capacidades por harness y ADRs
+docs/                        matriz de capacidades por harness, costo medido y ADRs
 ```
