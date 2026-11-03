@@ -100,6 +100,7 @@ Alcance: Claude Code y Codex. Copilot, Gemini y Cursor quedan como pendiente (ab
       por rutas y conteos, tier budget, lotes de triviales, `--small-model`/`--no-tiering`, en `pr-review-all` y
       `bin/pr-batch` (ADR-0001 §4 ter).
 - [x] Run dir único por lote (dos lotes en el mismo minuto se pisaban el `summary.json`).
+- [x] `v0.2.0`: tag anotado y release de `gh` (2026-11-03).
 - [ ] Orquestador en un modelo más barato: en Claude Code ahora es el 94 % del lote.
 - [ ] `pr-ready-all` con clases: falta un modo ligero de `pr-ready`.
 
