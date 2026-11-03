@@ -1,14 +1,21 @@
 # agent-skills
 
-Skills personales de code review y orquestación que funcionan igual en varios harnesses de agentes:
-**Claude Code, Codex, GitHub Copilot (CLI y VS Code), Gemini CLI y Cursor**.
+Skills personales de code review y orquestación escritas una sola vez para varios harnesses de agentes:
+**Claude Code y Codex** (probados), y GitHub Copilot (CLI y VS Code), Gemini CLI y Cursor (documentados).
 
 Hay una sola fuente: cada skill es una carpeta `skills/<nombre>/SKILL.md` en el formato abierto de Agent
 Skills, y un script la instala en cada harness. Las versiones por lote (`-all`) corren **cada PR en un agente
-aparte con su propio contexto**, así que revisar diez PRs cuesta lo mismo por PR que revisar una.
+aparte con su propio contexto**, así que la décima PR se revisa con el contexto tan limpio como la primera.
 
-> **Estado:** en construcción. Ver [PLAN.md](PLAN.md). La instalación, las cuatro skills de PR y `orchestrate`
-> funcionan en Claude Code y Codex; Copilot, Gemini y Cursor están documentados pero sin probar.
+## Estado (`v0.1.0`)
+
+| Harness | Estado |
+|---|---|
+| Claude Code | **Probado**: las cinco skills (también headless con `claude -p`), `bin/pr-batch`, `bin/agent-batch` e `install.sh` |
+| Codex | **Probado**: lo mismo, con `codex exec` |
+| GitHub Copilot (CLI y VS Code), Gemini CLI, Cursor | Documentado, pendiente: la instalación los contempla, pero nada se probó y los runners todavía no los soportan |
+
+Qué se probó y cómo, en [`adapters/`](adapters) (lo marcado **probado**) y en [PLAN.md](PLAN.md).
 
 ## Skills
 
@@ -156,13 +163,19 @@ escribe `summary.json` (las líneas de todas las PRs) y `summary.md` (la tabla) 
 reportes. Cómo se
 lanza cada agente depende del harness:
 
-| Harness | Un agente por PR con |
-|---|---|
-| Claude Code | herramienta `Workflow` (o `Agent`) |
-| Codex | `multi_agent` nativo, con `codex exec` por PR como respaldo |
-| Copilot CLI y Cursor | subagentes nativos (`/fleet` en Copilot, Task en Cursor) |
-| Gemini CLI y Copilot en VS Code | el runner universal, hasta confirmar que sus subagentes corren en paralelo |
-| Cualquiera | `bin/pr-batch --harness <h>`, que lanza una sesión headless por PR (`claude -p`, `codex exec`, `copilot -p`, `gemini -p`, `cursor-agent -p`) |
+| Harness | Un agente por PR con | Estado |
+|---|---|---|
+| Claude Code | herramienta `Workflow` (o `Agent`) | probado |
+| Codex | `multi_agent` nativo, con `codex exec` por PR como respaldo | probado |
+| Copilot CLI y Cursor | subagentes nativos (`/fleet` en Copilot, Task en Cursor) | documentado, pendiente |
+| Gemini CLI y Copilot en VS Code | el runner universal, hasta confirmar que sus subagentes corren en paralelo | documentado, pendiente |
+| Claude Code y Codex | `bin/pr-batch --harness claude\|codex`, que lanza una sesión headless por PR (`claude -p`, `codex exec`) | probado |
+
+**Costo.** Un agente por PR no es lo más barato: cada uno arranca de cero, y con dos PRs chicas el lote gasta
+más del doble de tokens que revisarlas una tras otra en una sola sesión. Lo que se gana es que el contexto del
+agente principal no crece con cada PR, que las PRs corren en paralelo y que una PR no contamina a la otra. Lo mismo
+vale para `orchestrate`: su orquestador tiene un costo fijo que solo compensa con tareas grandes o que
+conviene aislar. Números en [docs/token-cost.md](docs/token-cost.md).
 
 ## Estructura
 

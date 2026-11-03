@@ -88,10 +88,11 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 
 Alcance: Claude Code y Codex. Copilot, Gemini y Cursor quedan como pendiente (abajo).
 
-- [ ] Smokes que faltan en Claude Code y Codex: `pr-batch --dry-run` contra una PR real tras el refactor a
+- [x] Smokes que faltan en Claude Code y Codex: `pr-batch --dry-run` contra una PR real tras el refactor a
       `bin/lib/batch.sh`, `orchestrate` por la ruta `Workflow`, y `--only` de la skill. Medir tokens del
       orquestador (una `-all` de 2 PRs contra el port secuencial viejo de Codex, y `orchestrate` de 3 tareas).
-- [ ] README final (qué está probado y qué solo documentado), `v0.1.0`.
+- [x] README final (qué está probado y qué solo documentado).
+- [ ] `v0.1.0`: tag anotado y release de `gh`, después de confirmar el push.
 
 ### Pendiente: Copilot, Gemini y Cursor (sin fecha)
 
@@ -158,3 +159,12 @@ Alcance: Claude Code y Codex. Copilot, Gemini y Cursor quedan como pendiente (ab
 - **2026-11-02 (cierre de la Sesión 5):** la Sesión 6 se limita a Claude Code y Codex; Copilot, Gemini y
   Cursor pasan a "Pendiente" sin fecha. Retiradas al backup las copias de los comandos de PR del repo de trabajo
   y el `orchestrate.md.bak` global.
+- **2026-11-03 (Sesión 6):** Fase 5. Smokes contra PRs reales en `--dry-run`, con un `gh` envoltorio que bloquea
+  toda escritura (sin bloqueos, conteos de reviews y comentarios iguales antes y después). `bin/pr-batch` real
+  en los dos harnesses tras el refactor: contrato válido, `posted:false`. `orchestrate` por `Workflow` en Claude
+  Code (sin `Agent` permitido): una llamada, cuatro agentes, `summary.json` según el contrato; `--only t3` en los
+  dos relanzó solo t3 y conservó las otras líneas. Medido: con 2 PRs chicas, `pr-review-all` de Codex gasta más
+  del doble que el port secuencial viejo (1,7 M contra 0,8 M de input); el orquestador de `orchestrate` tiene un
+  costo fijo que con tareas mínimas supera al de las tareas. Probado: el shell de Codex es un zsh de login que
+  vuelve a poner los directorios reales delante del `PATH`, así que un stub en el `PATH` no alcanza (`ZDOTDIR`
+  sí). README final con estado por harness.
