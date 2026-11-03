@@ -92,7 +92,7 @@ Alcance: Claude Code y Codex. Copilot, Gemini y Cursor quedan como pendiente (ab
       `bin/lib/batch.sh`, `orchestrate` por la ruta `Workflow`, y `--only` de la skill. Medir tokens del
       orquestador (una `-all` de 2 PRs contra el port secuencial viejo de Codex, y `orchestrate` de 3 tareas).
 - [x] README final (qué está probado y qué solo documentado).
-- [ ] `v0.1.0`: tag anotado y release de `gh`, después de confirmar el push.
+- [x] `v0.1.0`: tag anotado y release de `gh` (2026-11-03).
 
 ### Pendiente: Copilot, Gemini y Cursor (sin fecha)
 
