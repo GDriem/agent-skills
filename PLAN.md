@@ -69,10 +69,8 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
       Codex) y los comandos de `~/.claude/commands/pr-*`. En Claude Code la skill gana al comando de igual
       nombre (documentado), así que se puede instalar primero y borrar el comando después. Hecho con
       `install.sh --retire-conflicts`: las 12 copias quedaron en `~/.agent-skills-backup/<fecha>/`.
-- [ ] Pendiente del usuario: el repo de trabajo tiene sus propias copias como **comandos de proyecto**
-      (`.claude/commands/pr-{review,ready}.md` y `.claude/backup-pr-commands/`). La skill de usuario les gana
-      por ser comandos; si fueran skills de proyecto, ganaría la personal (personal > proyecto). Decidir si se
-      borran de ese repo.
+- [x] Las copias del repo de trabajo (`.claude/commands/pr-{review,ready}.md` y `.claude/backup-pr-commands/`,
+      no versionadas) se retiraron al backup el 2026-11-02, junto con el `orchestrate.md.bak` global.
 
 ### Fase 4: resto de skills (Sesión 5)
 
@@ -88,9 +86,20 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 
 ### Fase 5: validación y release (Sesión 6)
 
-- [ ] Smoke por harness contra una PR real con `--dry-run`, una de una PR y una `-all` de 2 PRs. Medir tokens
-      del orquestador contra los del port secuencial viejo de Codex.
-- [ ] README final, `v0.1.0`.
+Alcance: Claude Code y Codex. Copilot, Gemini y Cursor quedan como pendiente (abajo).
+
+- [ ] Smokes que faltan en Claude Code y Codex: `pr-batch --dry-run` contra una PR real tras el refactor a
+      `bin/lib/batch.sh`, `orchestrate` por la ruta `Workflow`, y `--only` de la skill. Medir tokens del
+      orquestador (una `-all` de 2 PRs contra el port secuencial viejo de Codex, y `orchestrate` de 3 tareas).
+- [ ] README final (qué está probado y qué solo documentado), `v0.1.0`.
+
+### Pendiente: Copilot, Gemini y Cursor (sin fecha)
+
+- [ ] Hoy están documentados pero sin probar, y `bin/pr-batch` y `bin/agent-batch` responden "no implementado
+      aún".
+- [ ] Instalar los CLIs que falten, resolver lo "sin confirmar" de la matriz, agregarlos a `headless_run`
+      (`bin/lib/batch.sh`) y escribir `adapters/{copilot,gemini,cursor}.md`.
+- [ ] Gemini: el plan gratuito pasó a Antigravity CLI; puede que no se pueda probar.
 
 ## Decisiones
 
@@ -146,3 +155,6 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
   con `install.sh` (`allow_implicit_invocation: false` en Codex) y `~/.claude/commands/orchestrate.md` retirado al
   backup después de comprobar que la skill gana; el `.bak` viejo quedó donde estaba. Sigue la Sesión 6
   (`~/.claude/prompts/agent-skills-sesion6.md`).
+- **2026-11-02 (cierre de la Sesión 5):** la Sesión 6 se limita a Claude Code y Codex; Copilot, Gemini y
+  Cursor pasan a "Pendiente" sin fecha. Retiradas al backup las copias de los comandos de PR del repo de trabajo
+  y el `orchestrate.md.bak` global.
