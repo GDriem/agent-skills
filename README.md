@@ -7,9 +7,8 @@ Hay una sola fuente: cada skill es una carpeta `skills/<nombre>/SKILL.md` en el 
 Skills, y un script la instala en cada harness. Las versiones por lote (`-all`) corren **cada PR en un agente
 aparte con su propio contexto**, así que revisar diez PRs cuesta lo mismo por PR que revisar una.
 
-> **Estado:** en construcción. Ver [PLAN.md](PLAN.md). La instalación y las cuatro skills de PR funcionan en
-> Claude Code y Codex; Copilot, Gemini y Cursor están documentados pero sin probar, y `orchestrate` todavía no
-> está.
+> **Estado:** en construcción. Ver [PLAN.md](PLAN.md). La instalación, las cuatro skills de PR y `orchestrate`
+> funcionan en Claude Code y Codex; Copilot, Gemini y Cursor están documentados pero sin probar.
 
 ## Skills
 
@@ -19,7 +18,7 @@ aparte con su propio contexto**, así que revisar diez PRs cuesta lo mismo por P
 | `pr-ready <PR>` | Segunda pasada: confirma, leyendo el código en head, que cada hilo quedó atendido, busca huecos en los commits de fix y da veredicto. **Nunca aprueba**: si la PR está lista, te entrega el comentario de aprobación para que lo pegues tú | Solo comentarios de pendientes |
 | `pr-review-all` | `pr-review` para todas las PRs abiertas que no son draft, o para una lista. Un agente por PR | Sí |
 | `pr-ready-all` | `pr-ready` en lote. Un agente por PR | Solo pendientes |
-| `orchestrate` | Parte un prompt con varias tareas en un grafo de dependencias y lo ejecuta con una flota de agentes | Según la tarea |
+| `orchestrate` | Parte un prompt con varias tareas en un grafo de dependencias y lo ejecuta con un agente nuevo por tarea: lecturas en paralelo, escrituras en serie, y al final los checks del repo | No (con `--commit`, un commit local por tarea; nunca push) |
 
 Todas detectan el repo, el usuario y las convenciones en tiempo de ejecución, sin nada propio de un proyecto
 escrito en la skill. Por defecto escriben en el idioma de la PR; `--lang=en|es` lo fuerza.
@@ -107,6 +106,38 @@ Deja `summary.json` y `summary.md` en el directorio del lote, imprime la tabla y
 terminó en `ERROR`. Copilot, Gemini y Cursor todavía no están implementados en el runner. Costo medido en
 [docs/token-cost.md](docs/token-cost.md).
 
+### `orchestrate`
+
+```text
+orchestrate "auditar el módulo a; documentar el b; con lo del primero, corregir a" --dry-run   # solo el grafo
+orchestrate "…" --yes                      # sin pausa de confirmación
+orchestrate "…" --read-only                # nadie edita: solo investigan y reportan
+orchestrate "…" --commit                   # un commit por tarea de escritura (árbol limpio, rama no default)
+orchestrate --only t3,t5 --run-dir=<dir>   # re-lanza esas tareas de un run anterior
+```
+
+Cada tarea corre en un agente nuevo y termina con una línea de JSON (`status`, `summary` ≤ 60 palabras,
+`files_changed`, `artifacts`); lo largo queda en `<run-dir>/orchestrate-<id>.md`. El orquestador no lee código ni
+diffs. En vez de nombres de modelo, el grafo usa `tier: small|default|large`, y cada adapter lo traduce (Claude
+Code a modelo, Codex a esfuerzo de razonamiento).
+
+### `bin/agent-batch`
+
+`orchestrate` sin subagentes: una sesión headless por tarea, en olas según las dependencias. Lo usa la skill como
+respaldo y sirve desde cron o CI.
+
+```bash
+bin/agent-batch --harness codex --tasks graph.json --dry-run       # olas y prompts, sin lanzar nada
+bin/agent-batch --harness claude --task "auditar a" --task "auditar b" --wave --task "unir las dos auditorías" --yes
+bin/agent-batch --harness claude --tasks graph.json --commit --verify "build=npm run build" --allow-tool "Bash(npm *)" --yes
+bin/agent-batch --harness codex --retry-failed ~/.agent-skills/runs/2026-11-02T10-00-orchestrate
+```
+
+`--tasks` toma el `graph.json` que escribe la skill. Con `--task`, cada `--wave` corta una ola: las tareas
+siguientes dependen de todas las de la ola anterior. Deja `graph.json`, `summary.json` y `summary.md` en el run dir
+y sale con código 1 si alguna tarea no terminó `ok`. Comparte con `pr-batch` el arranque de sesiones
+(`bin/lib/batch.sh`).
+
 ### Cómo funcionan las versiones `-all`
 
 El agente principal solo lista las PRs y lanza un agente nuevo por cada una. Ese agente sigue la skill de una
@@ -140,6 +171,8 @@ skills/<nombre>/SKILL.md     fuente única, sin herramientas propias de un harne
 skills/<nombre>/references/  instrucciones largas que se cargan bajo demanda
 adapters/<harness>.md        cómo se lanza un subagente y dónde se instala, por harness
 bin/pr-batch                 runner universal: una sesión headless por PR
+bin/agent-batch              runner universal de orchestrate: una sesión headless por tarea, en olas
+bin/lib/batch.sh             lo que comparten los dos runners (arranque headless por harness, run dir)
 install.sh                   instala en cada harness, detecta drift y retira copias viejas con backup
 docs/                        inventario, matriz de capacidades por harness y ADRs
 ```

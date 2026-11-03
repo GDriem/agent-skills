@@ -76,9 +76,12 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 
 ### Fase 4: resto de skills (Sesión 5)
 
-- [ ] `orchestrate` neutral: hoy depende de `Workflow`. Para los demás harnesses, misma idea con `bin/pr-batch`
-      generalizado (`bin/agent-batch`).
-- [ ] Revisar qué otras skills personales son genéricas y entran aquí.
+- [x] `orchestrate` neutral (`skills/orchestrate`, contrato por tarea como enmienda al ADR, §4 bis): `Workflow`
+      o `Agent` en Claude Code, `spawn_agent` con `fork_turns:"none"` en Codex, y `bin/agent-batch` (una sesión
+      headless por tarea, en olas) para el resto. `bin/pr-batch` y `bin/agent-batch` comparten `bin/lib/batch.sh`.
+- [x] Revisar qué otras skills personales son genéricas y entran aquí: ninguna más. Las del gestor de tareas son de un
+      proyecto (y además son `.md` sueltos que Claude Code no carga), `graphify` y las de las plataformas son de
+      terceros, y las de los repos de trabajo se quedan en ellos.
 - [ ] Fuera de alcance: las skills propias de un proyecto siguen en el repo de ese proyecto. Para que Codex,
       Gemini y Copilot lean sus convenciones, ese repo necesita un `AGENTS.md` (o el archivo que use cada
       harness); las skills de aquí lo buscan, pero no lo crean.
@@ -133,3 +136,13 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
   `allow_implicit_invocation: false` saca la skill de la lista de Codex y `$x` la sigue cargando; por eso las
   `-all` lo llevan. Sigue la Sesión 5 (`~/.claude/prompts/agent-skills-sesion5.md`): `orchestrate` neutral y
   `bin/agent-batch`.
+- **2026-11-02 (Sesión 5):** Fase 4 cerrada. `skills/orchestrate` (base: la copia con `--commit`; tiers
+  `small|default|large` en vez de modelos; run dir del ADR con sufijo `-orchestrate`; `--parallel`; `--only` con
+  `--run-dir`), enmienda §4 bis al ADR, `bin/agent-batch` y `bin/lib/batch.sh` (`pr-batch` pasa los mismos
+  argumentos que antes, comprobado con `gh`/`claude`/`codex` falsos). Smokes en un repo de prueba con 3 tareas
+  (t3 depende de t1): `--dry-run` de la skill en los dos harnesses (grafo igual, nada lanzado), corrida real en
+  los dos (Claude Code eligió `Agent`; Codex lanzó 3 hijos con `fork_turns:"none"`) y `bin/agent-batch` real
+  con `--commit` y `--verify` en los dos, más fallo → `blocked` → `--retry-failed` con un harness falso. Instalada
+  con `install.sh` (`allow_implicit_invocation: false` en Codex) y `~/.claude/commands/orchestrate.md` retirado al
+  backup después de comprobar que la skill gana; el `.bak` viejo quedó donde estaba. Sigue la Sesión 6
+  (`~/.claude/prompts/agent-skills-sesion6.md`).
