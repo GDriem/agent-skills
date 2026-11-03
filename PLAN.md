@@ -24,13 +24,13 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 
 ### Fase 0: inventario y diseño (Sesión 1)
 
-- [ ] Diff de las 3 copias de cada comando. Elegir la mejor versión de cada paso y anotar de dónde sale cada
-      diferencia que se conserve.
-- [ ] Verificar contra la documentación oficial de cada harness y dejarlo en `docs/harness-matrix.md`:
+- [x] Diff de las 3 copias de cada comando. Elegir la mejor versión de cada paso y anotar de dónde sale cada
+      diferencia que se conserve. → [docs/inventory.md](docs/inventory.md)
+- [x] Verificar contra la documentación oficial de cada harness y dejarlo en `docs/harness-matrix.md`:
       carpeta de skills (usuario y repo), cómo se invocan, si soportan `references/`, cómo se lanza un subagente
       con contexto propio, modo headless (flag y cómo sacar la salida final a archivo), y cómo se pasan
-      argumentos (`$ARGUMENTS` o equivalente).
-- [ ] ADR en `docs/adr/0001-fuente-unica.md`: skills en formato abierto Agent Skills, adapters por harness, runner
+      argumentos (`$ARGUMENTS` o equivalente). → [docs/harness-matrix.md](docs/harness-matrix.md)
+- [x] ADR en `docs/adr/0001-fuente-unica.md`: skills en formato abierto Agent Skills, adapters por harness, runner
       universal como respaldo, contrato de resultado por PR.
 
 ### Fase 1: core neutral (Sesión 2)
@@ -48,7 +48,8 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 - [ ] `pr-review-all` y `pr-ready-all` con un solo cuerpo y una sección por harness:
   - Claude Code: `Workflow` (lo que ya hay), con `Agent` como respaldo si `Workflow` no está disponible.
   - Codex: `multi_agent`, con `codex exec` por PR como respaldo.
-  - Copilot, Gemini y Cursor: subagentes nativos si la Fase 0 confirma que existen y aíslan el contexto.
+  - Copilot CLI (`/fleet`) y Cursor (Task): subagentes nativos, documentados con contexto propio y en paralelo.
+  - Gemini CLI y Copilot en VS Code: `bin/pr-batch` hasta probar que sus subagentes corren en paralelo.
 - [ ] `bin/pr-batch --harness <h> [--parallel N] [--model M] <prs>`: lanza una sesión headless por PR, junta los
       JSON y escribe el resumen del lote. Es el respaldo universal y también sirve desde cron o CI.
 - [ ] Ahorro de tokens: el orquestador nunca lee diffs, el modelo por PR se puede configurar, y los reintentos
@@ -57,10 +58,12 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 ### Fase 3: instalación (Sesión 4)
 
 - [ ] `install.sh` con `--harness`, `--check` (drift entre la fuente y lo instalado) y `--uninstall`. Usa
-      symlinks y, antes de reemplazar algo, mueve lo que había a `~/.agent-skills-backup/<fecha>/`.
-- [ ] Reemplazar el port viejo de `~/.codex/skills/pr-*` y `~/.codex/prompts/pr-*` y los comandos de
-      `~/.claude/commands/pr-*`. Si un comando y una skill tienen el mismo nombre, confirmar cuál gana en Claude
-      Code antes de borrar el comando.
+      symlinks y, antes de reemplazar algo, mueve lo que había a `~/.agent-skills-backup/<fecha>/`. Dos
+      destinos: `~/.claude/skills` y `~/.agents/skills`; más el envoltorio TOML de Gemini y `agents/openai.yaml`
+      de Codex. `--check` avisa del duplicado que ven Copilot VS Code y Cursor (leen ambos destinos).
+- [ ] Reemplazar el port viejo de `~/.codex/skills/pr-*` y `~/.codex/prompts/pr-*` (prompts deprecados en
+      Codex) y los comandos de `~/.claude/commands/pr-*`. En Claude Code la skill gana al comando de igual
+      nombre (documentado), así que se puede instalar primero y borrar el comando después.
 
 ### Fase 4: resto de skills (Sesión 5)
 
@@ -90,3 +93,7 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 ## Bitácora
 
 - **2026-11-02:** scaffold del repo, README y plan. Sigue la Sesión 1 (`~/.claude/prompts/agent-skills-sesion1.md`).
+- **2026-11-02 (Sesión 1):** Fase 0 cerrada: inventario, matriz de harnesses con fuentes y ADR-0001. Cambios al
+  diseño: dos destinos de instalación (`~/.claude/skills` y `~/.agents/skills`), argumentos descritos por
+  capacidad (solo Claude Code documenta `$ARGUMENTS`), Gemini necesita un comando TOML, reportes fuera del repo
+  revisado (`~/.agent-skills/runs`). Sigue la Sesión 2 (`~/.claude/prompts/agent-skills-sesion2.md`).

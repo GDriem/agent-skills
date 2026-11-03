@@ -40,17 +40,19 @@ cd ~/Source/agent-skills
 ./install.sh --uninstall
 ```
 
-`install.sh` crea symlinks, no copias, así que un `git pull` deja todo al día. Destinos a nivel usuario:
+`install.sh` crea symlinks, no copias, así que un `git pull` deja todo al día. Bastan dos destinos a nivel
+usuario, porque todos los harnesses menos Claude Code leen `~/.agents/skills`:
 
 | Harness | Carpeta de skills | Cómo se invoca |
 |---|---|---|
 | Claude Code | `~/.claude/skills/` | `/pr-review 401` |
 | Codex | `~/.agents/skills/` | `$pr-review 401` |
-| GitHub Copilot | `~/.copilot/skills/` | `/pr-review 401` |
-| Gemini CLI | `~/.gemini/skills/` | `/pr-review 401` |
-| Cursor | `~/.cursor/skills/` | `/pr-review 401` |
+| GitHub Copilot (CLI y VS Code) | `~/.agents/skills/` | `/pr-review 401` |
+| Gemini CLI | `~/.agents/skills/` + comando en `~/.gemini/commands/` | `/pr-review 401` (el comando activa la skill; Gemini no invoca skills con `/`) |
+| Cursor | `~/.agents/skills/` | `/pr-review 401` |
 
-Las rutas y la forma de invocar de Copilot, Gemini y Cursor se verifican en la Sesión 1 (ver el plan).
+Copilot en VS Code y Cursor también leen `~/.claude/skills`, así que pueden ver cada skill dos veces;
+`install.sh --check` lo avisa. Detalle y fuentes en [docs/harness-matrix.md](docs/harness-matrix.md).
 
 ## Uso
 
@@ -71,21 +73,25 @@ pr-review-all --repo owner/repo 12,15
 ### Cómo funcionan las versiones `-all`
 
 El agente principal solo lista las PRs y lanza un agente nuevo por cada una. Ese agente sigue la skill de una
-PR completa y termina con un resultado corto y fijo:
+PR completa y termina con un resultado corto y fijo, una línea de JSON (contrato completo en
+[ADR-0001](docs/adr/0001-fuente-unica.md)):
 
 ```json
-{ "pr": 401, "verdict": "REQUEST_CHANGES", "findings": { "blocking": 2, "suggestion": 3 },
-  "posted": true, "report": "runs/2026-11-02T10-00/pr-401.md", "summary": "≤ 60 palabras" }
+{ "skill": "pr-review", "repo": "owner/repo", "pr": 401, "verdict": "REQUEST_CHANGES", "max_priority": "P1",
+  "findings": { "blocking": 2, "suggestion": 3, "decision": 0 }, "posted": true,
+  "report": "~/.agent-skills/runs/2026-11-02T10-00/pr-401.md", "summary": "≤ 60 palabras" }
 ```
 
-El reporte completo se queda en `runs/<fecha>/pr-<n>.md`. El agente principal nunca ve diffs ni archivos de
-otra PR, solo esas líneas. Cómo se lanza cada agente depende del harness:
+El reporte completo se queda en `~/.agent-skills/runs/<fecha>/pr-<n>.md` (o bajo `$AGENT_SKILLS_RUNS`), nunca
+dentro del repo revisado. El agente principal nunca ve diffs ni archivos de otra PR, solo esas líneas. Cómo se
+lanza cada agente depende del harness:
 
 | Harness | Un agente por PR con |
 |---|---|
 | Claude Code | herramienta `Workflow` (o `Agent`) |
 | Codex | `multi_agent` nativo, con `codex exec` por PR como respaldo |
-| Copilot, Gemini y Cursor | subagentes nativos donde existan; si no, el runner universal |
+| Copilot CLI y Cursor | subagentes nativos (`/fleet` en Copilot, Task en Cursor) |
+| Gemini CLI y Copilot en VS Code | el runner universal, hasta confirmar que sus subagentes corren en paralelo |
 | Cualquiera | `bin/pr-batch --harness <h>`, que lanza una sesión headless por PR (`claude -p`, `codex exec`, `copilot -p`, `gemini -p`, `cursor-agent -p`) |
 
 ## Estructura
@@ -96,5 +102,5 @@ skills/<nombre>/references/  instrucciones largas que se cargan bajo demanda
 adapters/<harness>.md        cómo se lanza un subagente y dónde se instala, por harness
 bin/pr-batch                 runner universal: una sesión headless por PR
 install.sh                   instala en cada harness y detecta drift
-docs/                        matriz de capacidades por harness y decisiones de diseño
+docs/                        inventario, matriz de capacidades por harness y ADRs
 ```
