@@ -4,7 +4,7 @@ Objetivo: que `pr-review`, `pr-ready`, `pr-review-all`, `pr-ready-all` y `orches
 Code, Codex, Copilot, Gemini CLI y Cursor desde una sola fuente. En las versiones por lote, cada PR corre en su
 propio agente y con su propio contexto.
 
-Se trabaja por sesiones, igual que la migración a .NET 10 de payment: un prompt por sesión en
+Se trabaja por sesiones: un prompt por sesión en
 `~/.claude/prompts/agent-skills-sesionN.md`, y cada sesión termina actualizando este archivo y escribiendo el
 prompt de la siguiente.
 
@@ -15,7 +15,7 @@ Hay **tres copias** de los comandos de PR, y ya divergieron:
 | Copia | Qué tiene | Problema |
 |---|---|---|
 | `~/.claude/commands/pr-*.md` | Las 4, versión más usada. Las `-all` usan `Workflow` con un agente por PR | Solo funcionan en Claude Code |
-| `gxs-be/.claude/commands/pr-{review,ready}.md` | 2 de las 4 (las `-all` quedaron en `backup-pr-commands/`) | Difieren de la copia global |
+| `<repo de trabajo>/.claude/commands/pr-{review,ready}.md` | 2 de las 4, versionadas en un repo de trabajo | Difieren de la copia global |
 | `~/.codex/skills/pr-*` y `~/.codex/prompts/pr-*.md` | Port a Codex del 2026-09-22 | Las `-all` **prohíben subagentes** ("one ordered loop in this session"): todas las PRs comparten un contexto |
 
 Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que justificó ese port ya no existe.
@@ -66,10 +66,10 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 
 - [ ] `orchestrate` neutral: hoy depende de `Workflow`. Para los demás harnesses, misma idea con `bin/pr-batch`
       generalizado (`bin/agent-batch`).
-- [ ] Decidir qué de `~/.claude/skills/cu-*` (ClickUp) es personal y entra aquí.
-- [ ] Fuera de alcance: las skills propias de gxs-be (doc-service, postgres-*, data-architect,
-      sql-query-review, postman-update) siguen en ese repo. Como mucho, una PR aparte en gxs-be que agregue
-      `AGENTS.md` (hoy no existe, así que Codex, Gemini y Copilot no leen las convenciones del monorepo).
+- [ ] Revisar qué otras skills personales son genéricas y entran aquí.
+- [ ] Fuera de alcance: las skills propias de un proyecto siguen en el repo de ese proyecto. Para que Codex,
+      Gemini y Copilot lean sus convenciones, ese repo necesita un `AGENTS.md` (o el archivo que use cada
+      harness); las skills de aquí lo buscan, pero no lo crean.
 
 ### Fase 5: validación y release (Sesión 6)
 
@@ -79,7 +79,10 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 
 ## Decisiones
 
-- Repo personal (`GDriem/agent-skills`), no en ClickUp ni en gxs-be.
+- Repo personal y público (`GDriem/agent-skills`). **Nada de un proyecto concreto**: ni nombres de repos,
+  servicios, usuarios, IDs ni URLs internas. Las skills detectan en tiempo de ejecución el repo, el usuario de
+  `gh` y las convenciones (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`…) del directorio donde se ejecutan.
+  Lo que se porte de las copias existentes se revisa con esa regla antes de commitear.
 - Instrucciones de las skills en inglés; fases, reportes y comentarios en el idioma de la PR (como hoy).
 - Ninguna skill aprueba PRs, en ningún harness.
 - Sin referencias a Claude en commits ni en comentarios publicados.
