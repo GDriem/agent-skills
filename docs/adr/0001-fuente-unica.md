@@ -2,7 +2,8 @@
 
 - **Estado:** aceptada. Enmienda de la Sesión 2: el reporte se llama `<skill>-<n>.md` (con `pr-<n>.md`,
   `pr-review` y `pr-ready` sobre la misma PR en el mismo minuto se pisaban; pasó en el smoke), y se agrega
-  `--run-dir=<ruta>` para que un lote fije el directorio.
+  `--run-dir=<ruta>` para que un lote fije el directorio. Enmienda de la Sesión 5: contrato por tarea para
+  `orchestrate` y `bin/agent-batch` (§4 bis).
 - **Fecha:** 2026-11-02
 - **Contexto previo:** [inventario](../inventory.md), [matriz de harnesses](../harness-matrix.md)
 
@@ -96,6 +97,27 @@ libre.
 
 Los valores de `verdict` van en inglés aunque la PR sea en español: son para máquinas. Lo que lee una persona
 (reporte, comentarios, `summary`) va en el idioma de la PR.
+
+### 4 bis. Contrato por tarea (`orchestrate`, Sesión 5)
+
+`orchestrate` no trabaja sobre PRs sino sobre un grafo de tareas, pero sigue el mismo patrón: el orquestador solo
+ve una línea de JSON por tarea, y un runner headless (`bin/agent-batch`) produce lo mismo que los subagentes
+nativos. El detalle está en `skills/orchestrate/references/contract.md`.
+
+- **Prompt fijo por tarea**: el de la tarea más unas reglas de ejecución (solo lectura o fence de escritura,
+  criterio de "hecho", conclusiones y artefactos de sus dependencias, dónde escribir lo largo, la línea final).
+  La skill, el script de `Workflow` del adapter y `bin/agent-batch` arman el mismo texto.
+- **Línea final**:
+  `{"skill":"orchestrate","task":"t1","kind":"read","status":"ok","summary":"≤ 60 palabras","files_changed":[],"artifacts":[],"follow_ups":[],"error":null}`.
+  `status` del agente: `ok` o `failed`; el orquestador sintetiza `blocked` (dependencia que no terminó `ok`, o
+  ciclo) y `skipped` (nunca lanzada). Con `--commit` agrega `commit` (`committed`, `sha`, `error`).
+- **Run dir**: `<runs>/<timestamp>-orchestrate` (o `--run-dir`) con `graph.json`, los `orchestrate-<id>.md` que
+  escriban las tareas, `summary.json` (`{"tasks":[…],"verify":…}`) y `summary.md`.
+- **Línea del run**: `skill`, `run_dir`, `graph`, `total`, `counts` (`ok`/`failed`/`blocked`/`skipped`),
+  `failed` (ids a re-lanzar con `--only`), `dry_run`, `commits`, `verify`, `summary_json`, `summary_md`.
+- **Tiers en vez de modelos**: `small|default|large` + `effort`; cada adapter dice qué significan.
+- `bin/agent-batch` comparte con `bin/pr-batch` el arranque de sesiones headless (`bin/lib/batch.sh`), así que
+  agregar un harness al runner lo agrega a los dos.
 
 ### 5. Reglas que no cambian por harness
 

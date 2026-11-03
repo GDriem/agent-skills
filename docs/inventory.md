@@ -97,3 +97,23 @@ reconcilian juntas.
 - Traducir al inglés los títulos de los pasos del core; las plantillas de comentario siguen en el idioma de la PR
   (español e inglés de ejemplo).
 - Decidir el valor por defecto de `--parallel` (propuesta: 3) y documentar que se puede bajar a 1.
+
+## orchestrate (Sesión 5)
+
+Dos copias, las dos de Claude Code: `~/.claude/commands/orchestrate.md` (346 líneas) y un `.bak` más viejo (280)
+al lado. La nueva es la vieja más `--commit`; no hay ninguna otra diferencia. **Base: la nueva.** No había port a
+Codex.
+
+| Qué | Copia de Claude Code | Se queda | Por qué |
+|---|---|---|---|
+| Grafo inline desde el prompt, sin leer código; un agente que solo devuelve rutas si hace falta ubicar algo | sí | igual, por capacidad | Es la economía de contexto que justifica la skill. "Un agente `Explore`" pasa a "un agente de solo lectura". |
+| Reglas de descomposición (seam, `read`/`write`, deps reales, fence, no inventar tareas, `--max`) | sí | igual | Genéricas. Los ejemplos con nombres de apps y del gestor de paquetes de un repo pasan a genéricos. |
+| `model: haiku\|sonnet\|opus` + `effort` | sí | **nuevo**: `tier: small\|default\|large` + `effort` | Los nombres de modelo son de un proveedor. El adapter traduce: Claude Code a modelo, Codex a `reasoning_effort`. |
+| Run dir en el scratchpad o `mktemp` | sí | **nuevo**: regla del ADR, `<runs>/<ts>-orchestrate` | Igual que las PRs; el sufijo evita pisar el `summary.json` de un lote de PRs del mismo minuto. |
+| Resultado por esquema de `Workflow` (`status`, `summary`, `filesChanged`, …) | sí | **nuevo**: línea de JSON final (contrato por tarea) | Mismo patrón que las PRs: el orquestador nunca interpreta texto libre, y `bin/agent-batch` lee la misma línea. Con `Workflow`, el esquema sigue y devuelve el mismo objeto. |
+| Lecturas en paralelo, escrituras en serie sobre el árbol | sí | igual, con `--parallel N` | El tope evita lanzar 10 lecturas a la vez. |
+| `--commit`: árbol limpio, rama no default, un commit por tarea con el fence | sí (agente aparte) | igual; fuera de `Workflow` commitea el orquestador con shell | El agente aparte solo existe porque un script de `Workflow` no puede correr comandos. |
+| Verificación al final con los comandos del repo | sí (agente) | igual; fuera de `Workflow` los corre el orquestador | — |
+| `--only` | re-lanzar ids, sin decir de dónde salía el resto | **nuevo**: exige `--run-dir` y toma las demás líneas de `summary.json` | Sin el run anterior, los dependientes no tienen conclusiones que leer. |
+| `budget`, `resumeFromRunId` | en el cuerpo | al adapter de Claude Code | Son de `Workflow`. |
+| Textos del script y del reporte en español | sí | inglés las instrucciones; el reporte en el idioma del prompt | Regla del repo. |
