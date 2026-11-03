@@ -1,0 +1,66 @@
+# Adapter: claude-code
+
+How the neutral skills in `skills/` run in the Anthropic CLI (`claude`). Verified with 2.1.309 on 2026-11-02;
+what was tested in this repo is marked **probado**, the rest comes from the docs cited in
+[docs/harness-matrix.md](../docs/harness-matrix.md).
+
+## Install
+
+| Scope | Path |
+|---|---|
+| User | `~/.claude/skills/<name>` → symlink to `skills/<name>` |
+| Project | `<repo>/.claude/skills/<name>` |
+
+- `~/.agents/skills` is **not** read (**probado**: a skill there answered "not installed"; the same skill under
+  `.claude/skills` ran). This harness needs its own destination.
+- A skill wins over a command with the same name in `~/.claude/commands`, so the skill can be installed before
+  the old command is removed (documented).
+- No extra metadata: the neutral frontmatter (`name`, `description`) is enough.
+
+## Invocation and arguments
+
+- `/pr-review 401 --dry-run`, or implicitly when the request matches the description.
+- `$ARGUMENTS` in the body is replaced with the text after the skill name (**probado**: `hola --dos` arrived
+  verbatim). Without a placeholder the harness appends `ARGUMENTS: <text>`; the neutral body has one, so the
+  "text after the skill name" sentence is just a fallback here.
+
+## Capabilities
+
+| Capability in the skill | How it is met here |
+|---|---|
+| Run shell commands | `Bash` |
+| Read files / search files by name | `Read`, `Glob`, `Grep` |
+| Write a file (temporary payload, report) | `Write` (or a heredoc in `Bash`). The report lives outside the reviewed repo, so an interactive session asks for permission the first time |
+| Ask the user and wait | `AskUserQuestion`, or a plain question in the reply and wait for the next turn. Not available under `claude -p`: the skill then follows "No one to ask" |
+| Launch a fresh agent with its own context (the `-all` skills) | `Workflow` if the installation has it (one `agent()` per PR, results by schema), otherwise `Agent` (one per PR, up to `--parallel` at a time; subagents return only their final message) |
+
+## Headless (for `bin/pr-batch`)
+
+```bash
+AGENT_SKILLS_RUNS="$RUNS" claude -p "/pr-review owner/repo#401 --auto --run-dir=$RUN_DIR" \
+  --output-format json --add-dir "$TMPDIR" \
+  --allowedTools "Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm *),Read,Write,Glob,Grep" \
+  < /dev/null > "$WORK/pr-401.claude.json" 2> "$WORK/pr-401.claude.err"
+jq -r '.result' "$WORK/pr-401.claude.json" | tail -n 1     # the contract line
+```
+
+- `/pr-review` inside the `-p` prompt expands the skill (**probado**).
+- The final message is `.result` of `--output-format json`; there is no flag to write it to a file, so redirect
+  stdout.
+- Since 2.1.302, `-p` starts in manual permission mode and denies anything not pre-approved. The space before
+  `*` in `Bash(gh *)` matters.
+- **Compound commands are denied** even when every part starts with an allowed prefix (**probado**: `;`,
+  `for`, `cd … &&` and heredocs were all refused). The skills ask for one simple command per call for this
+  reason.
+- **Paths outside the working directory are denied** for allowed commands too (**probado**: `jq -c . <file>`
+  and `rm <file>` on a `mktemp` file under `$TMPDIR` were refused). Run from a directory that contains the run
+  directory, set `AGENT_SKILLS_RUNS` under it, and pass `--add-dir "$TMPDIR"` so the temporary payload and the
+  JSON check work.
+- Redirect stdin (`< /dev/null`): otherwise `-p` waits 3 s for piped input and prints a warning to stderr.
+  Keep stderr out of the JSON file.
+- `--model <m>` sets the model per PR.
+
+## Notes
+
+- `--bare` skips skills and `CLAUDE.md`: never use it with these skills.
+- `resumeFromRunId` exists only for `Workflow`; the neutral retry path is re-running the failed PR numbers.

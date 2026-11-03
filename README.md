@@ -79,10 +79,10 @@ PR completa y termina con un resultado corto y fijo, una línea de JSON (contrat
 ```json
 { "skill": "pr-review", "repo": "owner/repo", "pr": 401, "verdict": "REQUEST_CHANGES", "max_priority": "P1",
   "findings": { "blocking": 2, "suggestion": 3, "decision": 0 }, "posted": true,
-  "report": "~/.agent-skills/runs/2026-11-02T10-00/pr-401.md", "summary": "≤ 60 palabras" }
+  "report": "~/.agent-skills/runs/2026-11-02T10-00/pr-review-401.md", "summary": "≤ 60 palabras" }
 ```
 
-El reporte completo se queda en `~/.agent-skills/runs/<fecha>/pr-<n>.md` (o bajo `$AGENT_SKILLS_RUNS`), nunca
+El reporte completo se queda en `~/.agent-skills/runs/<fecha>/<skill>-<n>.md` (o bajo `$AGENT_SKILLS_RUNS`), nunca
 dentro del repo revisado. El agente principal nunca ve diffs ni archivos de otra PR, solo esas líneas. Cómo se
 lanza cada agente depende del harness:
 

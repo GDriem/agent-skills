@@ -35,15 +35,17 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 
 ### Fase 1: core neutral (Sesión 2)
 
-- [ ] `skills/pr-review` y `skills/pr-ready` sin nombres de herramientas de un harness. Lo que cambia según el
+- [x] `skills/pr-review` y `skills/pr-ready` sin nombres de herramientas de un harness. Lo que cambia según el
       harness (cómo preguntar al usuario, cómo lanzar un agente) se describe por capacidad y se resuelve en el
       adapter.
-- [ ] Flag nuevo `--dry-run`: hace todo menos escribir en GitHub, e imprime lo que publicaría. Hace falta para los
+- [x] Flag nuevo `--dry-run`: hace todo menos escribir en GitHub, e imprime lo que publicaría. Hace falta para los
       smokes.
-- [ ] Contrato de resultado por PR (JSON de una línea, resumen ≤ 60 palabras, reporte completo a
-      `runs/<fecha>/pr-<n>.md`). Lo cumplen también las skills de una PR, para que el lote no tenga que adivinar.
+- [x] Contrato de resultado por PR (JSON de una línea, resumen ≤ 60 palabras, reporte completo a
+      `runs/<fecha>/<skill>-<n>.md`). Lo cumplen también las skills de una PR, para que el lote no tenga que adivinar.
 
 ### Fase 2: un agente por PR (Sesiones 2 y 3)
+
+- [x] Adapters `adapters/claude-code.md` y `adapters/codex.md`, con lo "sin confirmar" de la matriz probado.
 
 - [ ] `pr-review-all` y `pr-ready-all` con un solo cuerpo y una sección por harness:
   - Claude Code: `Workflow` (lo que ya hay), con `Agent` como respaldo si `Workflow` no está disponible.
@@ -97,3 +99,10 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
   diseño: dos destinos de instalación (`~/.claude/skills` y `~/.agents/skills`), argumentos descritos por
   capacidad (solo Claude Code documenta `$ARGUMENTS`), Gemini necesita un comando TOML, reportes fuera del repo
   revisado (`~/.agent-skills/runs`). Sigue la Sesión 2 (`~/.claude/prompts/agent-skills-sesion2.md`).
+- **2026-11-02 (Sesión 2):** Fase 1 cerrada y adapters de Claude Code y Codex. Smoke `--dry-run` de
+  `pr-review` y `pr-ready` contra una PR real en los dos harnesses: nada publicado, reporte escrito, última línea
+  parsea con `jq`. Probado: Claude Code no lee `~/.agents/skills`; Codex no sustituye `$ARGUMENTS` pero recibe
+  el texto; `spawn_agent` hereda el contexto del padre salvo `fork_turns:"none"`; Codex 0.166 todavía lee
+  `~/.codex/skills` (el port viejo choca con la skill nueva, Fase 3 lo retira primero); `codex exec` necesita
+  stdin cerrado; `claude -p` niega comandos compuestos aunque empiecen por `gh`. Enmienda al ADR: reporte
+  `<skill>-<n>.md` y `--run-dir`. Las `-all` pasan a la Sesión 3 (`~/.claude/prompts/agent-skills-sesion3.md`).

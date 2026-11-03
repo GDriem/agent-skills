@@ -2,7 +2,8 @@
 
 Cada dato cita la página oficial donde se leyó. "No documentado" significa que la documentación oficial no lo
 dice; no es un "no". Solo `claude` (2.1.309) y `codex` (0.166.0) están instalados: Copilot, Gemini y Cursor se
-documentaron **sin probar**, y la Sesión 6 los valida con smokes.
+documentaron **sin probar**, y la Sesión 6 los valida con smokes. Lo marcado **probado** se verificó en la
+Sesión 2 con skills de prueba y un smoke `--dry-run` contra una PR real (ver los adapters).
 
 Las páginas de Codex en `developers.openai.com/codex` redirigen (308) a `learn.chatgpt.com/docs/…`; se citan las
 URL finales.
@@ -13,10 +14,10 @@ URL finales.
 |---|---|---|---|---|---|---|
 | Skills de usuario | `~/.claude/skills` | `~/.agents/skills` | `~/.copilot/skills`, `~/.agents/skills` | `~/.copilot/skills`, `~/.claude/skills`, `~/.agents/skills` | `~/.gemini/skills`, `~/.agents/skills` | `~/.cursor/skills`, `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills` |
 | Skills de repo | `.claude/skills` | `.agents/skills` | `.github/skills`, `.claude/skills`, `.agents/skills` | `.github/skills`, `.claude/skills`, `.agents/skills` | `.gemini/skills`, `.agents/skills` | `.cursor/skills`, `.agents/skills`, `.claude/skills`, `.codex/skills` |
-| Lee `.agents/skills` | No documentado | **Sí** (única ruta) | Sí | Sí | Sí (gana a `.gemini`) | Sí |
+| Lee `.agents/skills` | **No** (probado) | **Sí** (y todavía `~/.codex/skills`, probado) | Sí | Sí | Sí (gana a `.gemini`) | Sí |
 | Invocación | `/x` o implícita | `$x`, `/skills` o implícita | `/x` o implícita | `/x` o implícita | **Solo implícita** (`activate_skill`) | `/x` o implícita |
-| Argumentos | `$ARGUMENTS`, `$N`; si no hay placeholder, se anexa | No documentado | No documentado | Texto libre tras `/x` | No documentado (los comandos TOML usan `{{args}}`) | No documentado |
-| Subagentes con contexto propio | Sí (`Agent`) | Sí (hilos de agente) | Sí (`task`, `/fleet`) | Sí (`runSubagent`) | Sí (`.gemini/agents`) | Sí (Task) |
+| Argumentos | `$ARGUMENTS`, `$N`; si no hay placeholder, se anexa (probado) | No se sustituye; el modelo recibe el texto tras `$x` (probado) | No documentado | Texto libre tras `/x` | No documentado (los comandos TOML usan `{{args}}`) | No documentado |
+| Subagentes con contexto propio | Sí (`Agent`) | Solo con `fork_turns:"none"`; por defecto hereda todo (probado) | Sí (`task`, `/fleet`) | Sí (`runSubagent`) | Sí (`.gemini/agents`) | Sí (Task) |
 | En paralelo | Sí (hasta 20) | Sí | Sí (`/fleet`) | No documentado | No documentado | Sí (varias Task) |
 | Headless | `claude -p` | `codex exec` | `copilot -p` | — | `gemini -p` | `cursor-agent -p` |
 | Mensaje final a archivo | redirigir stdout (`--output-format json` → `.result`) | `-o FILE` | `-s` + redirigir | — | `-o json` → `.response` + redirigir | `--output-format json` → `.result` + redirigir |
@@ -51,28 +52,28 @@ URL finales.
 
 | Tema | Dato | Fuente |
 |---|---|---|
-| Carpetas | Usuario `~/.claude/skills/<n>/SKILL.md`; proyecto `.claude/skills/`; anidadas `<subdir>/.claude/skills/`; plugins; managed. Empate de nombre: enterprise > personal > proyecto. `.agents/skills` no documentado | https://code.claude.com/docs/en/skills |
+| Carpetas | Usuario `~/.claude/skills/<n>/SKILL.md`; proyecto `.claude/skills/`; anidadas `<subdir>/.claude/skills/`; plugins; managed. Empate de nombre: enterprise > personal > proyecto. **`~/.agents/skills` no se lee** (probado 2026-11-02: la skill de prueba respondió "no instalada"; la misma bajo `.claude/skills` corrió) | https://code.claude.com/docs/en/skills |
 | Formato | Todos los campos opcionales; `description` recomendado. Otros: `name`, `argument-hint`, `arguments`, `disable-model-invocation`, `user-invocable`, `allowed-tools`, `model`, `context`, `agent`, … Archivos de apoyo y `scripts/` vía `${CLAUDE_SKILL_DIR}`; `references/` no tiene significado especial. Cuerpo < 500 líneas | https://code.claude.com/docs/en/skills |
 | Invocación y argumentos | `/x` o implícita. `$ARGUMENTS`, `$ARGUMENTS[N]`/`$N`, nombres de `arguments`. Sin placeholder se anexa `ARGUMENTS: <valor>`. **Skill gana a comando de igual nombre** | https://code.claude.com/docs/en/skills |
 | Subagentes | Contexto propio, solo vuelve el resumen. Herramienta `Agent` (antes `Task`). Agentes en `~/.claude/agents`, `.claude/agents`. Hasta 20 en paralelo (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`); 3 niveles de anidación | https://code.claude.com/docs/en/sub-agents |
 | Skill que lanza subagentes | `context: fork` + `agent:` corre la skill en un subagente; también basta pedirlo en lenguaje natural | https://code.claude.com/docs/en/skills |
 | `Workflow` | Herramienta de esta instalación para orquestar agentes con script; no aparece en la documentación pública consultada. El adapter la usa si existe y cae a `Agent` si no | (local, no documentado) |
 | Headless | `claude -p "<prompt>"` o stdin. `--output-format text\|json\|stream-json` (`.result`); `--json-schema` → `.structured_output`. Sin flag de archivo: redirigir. `/x` dentro del prompt de `-p` se expande. `--bare` omite skills y CLAUDE.md | https://code.claude.com/docs/en/headless |
-| Aprobar `gh`/`git` | `--allowedTools "Bash(gh *),Bash(git *)"` (el espacio antes de `*` importa); `--permission-mode`; desde 2.1.302 `-p` arranca en modo manual y niega lo no aprobado | https://code.claude.com/docs/en/headless |
+| Aprobar `gh`/`git` | `--allowedTools "Bash(gh *),Bash(git *)"` (el espacio antes de `*` importa); `--permission-mode`; desde 2.1.302 `-p` arranca en modo manual y niega lo no aprobado. **Probado:** un comando compuesto (`;`, `for`, `cd … &&`, heredoc) se niega aunque empiece por `gh`; por eso las skills piden un comando simple por llamada | https://code.claude.com/docs/en/headless |
 | Contexto | `CLAUDE.md` de la raíz del sistema hacia el cwd, subdirectorios bajo demanda, `@imports`. `AGENTS.md` se lee nativo (2.1.277+) solo si no hay `CLAUDE.md`, `.claude/CLAUDE.md` ni `CLAUDE.local.md` | https://code.claude.com/docs/en/memory |
 
 ## Codex
 
 | Tema | Dato | Fuente |
 |---|---|---|
-| Carpetas | Repo `.agents/skills` (cwd, padres dentro del repo y raíz); usuario `~/.agents/skills`; admin `/etc/codex/skills`; sistema. `~/.codex/skills` no está en la lista. Local: `~/.agents/skills` existe y tiene skills instaladas | https://learn.chatgpt.com/docs/build-skills |
+| Carpetas | Repo `.agents/skills` (cwd, padres dentro del repo y raíz); usuario `~/.agents/skills`; admin `/etc/codex/skills`; sistema. `~/.codex/skills` no está en la lista, **pero 0.166 la sigue leyendo** (probado: cargó a la vez el port viejo y la skill nueva de igual nombre y mezcló instrucciones) | https://learn.chatgpt.com/docs/build-skills |
 | Formato | `name` y `description` obligatorios. Carpetas `scripts/`, `references/`, `assets/`, `agents/openai.yaml` (`interface`, `policy.allow_implicit_invocation`, `dependencies.tools`). Al arrancar solo carga nombre, descripción y ruta (tope 2 % del contexto u 8000 caracteres) | https://learn.chatgpt.com/docs/build-skills |
-| Invocación y argumentos | `$x`, `/skills` o implícita. Paso de argumentos a una skill: **no documentado** | https://learn.chatgpt.com/docs/build-skills |
+| Invocación y argumentos | `$x`, `/skills` o implícita. Paso de argumentos no documentado; **probado:** `$ARGUMENTS` queda literal y el modelo toma el texto tras `$x` | https://learn.chatgpt.com/docs/build-skills |
 | Prompts personalizados | **Deprecados** ("use skills"). Se invocaban `/prompts:<n>` con `$1`–`$9`, `$ARGUMENTS` | https://learn.chatgpt.com/docs/custom-prompts |
-| Subagentes | Hilos de agente en paralelo; se lanzan pidiéndolo o porque lo dice `AGENTS.md`/la skill. Config `agents.enabled`, `agents.max_concurrent_threads_per_session`, `default_subagent_model`. Agentes TOML en `~/.codex/agents`, `.codex/agents`. Nombres de herramientas (`spawn_agent`, `wait`) y contexto propio explícito: no documentados | https://learn.chatgpt.com/docs/agent-configuration/subagents |
+| Subagentes | Hilos de agente en paralelo; se lanzan pidiéndolo o porque lo dice `AGENTS.md`/la skill. Config `agents.enabled`, `agents.max_concurrent_threads_per_session`, `default_subagent_model`. Agentes TOML en `~/.codex/agents`, `.codex/agents`. Nombres no documentados; **probado:** `spawn_agent(task_name, message, fork_turns, model, reasoning_effort)`, `wait_agent(timeout_ms)`, `send_message`, `followup_task`, `interrupt_agent`. `fork_turns` por defecto `"all"` (el hijo hereda la conversación del padre); `"none"` arranca limpio. Falla con `exec --ephemeral` | https://learn.chatgpt.com/docs/agent-configuration/subagents |
 | Feature flags (local) | `codex features list`: `multi_agent` stable **true**, `multi_agent_v2` stable false, `hooks` y `plugins` true | (local, 0.166.0) |
-| Headless | `codex exec "<prompt>"` o `codex exec -` (stdin). Mensaje final a stdout. `-o/--output-last-message FILE`, `--json` (JSONL), `--output-schema FILE`, `-s read-only\|workspace-write\|danger-full-access` (read-only por defecto), `--approve-for-me`, `--dangerously-bypass-approvals-and-sandbox`, `-C`, `--ephemeral`, `--worktree`, `-m`. `--full-auto` ya no existe | https://learn.chatgpt.com/docs/non-interactive-mode · https://learn.chatgpt.com/docs/developer-commands?surface=cli · `codex exec --help` local |
-| Aprobar `gh`/`git` | `approval_policy = "never"` / `-a never` quita prompts pero el sandbox sigue; en `workspace-write` la red está apagada salvo `[sandbox_workspace_write] network_access = true`. `prefix_rule(pattern=["gh"], decision="allow")` en `~/.codex/rules/*.rules` (experimental) corre el comando fuera del sandbox sin prompt | https://learn.chatgpt.com/docs/agent-approvals-security · https://learn.chatgpt.com/docs/agent-configuration/rules |
+| Headless | `codex exec "<prompt>"` o `codex exec -` (stdin). **Probado:** lanzado desde un script sin `< /dev/null` se queda esperando stdin. Mensaje final a stdout. `-o/--output-last-message FILE`, `--json` (JSONL), `--output-schema FILE`, `-s read-only\|workspace-write\|danger-full-access` (read-only por defecto), `--approve-for-me`, `--dangerously-bypass-approvals-and-sandbox`, `-C`, `--ephemeral`, `--worktree`, `-m`. `--full-auto` ya no existe | https://learn.chatgpt.com/docs/non-interactive-mode · https://learn.chatgpt.com/docs/developer-commands?surface=cli · `codex exec --help` local |
+| Aprobar `gh`/`git` | `approval_policy = "never"` / `-a never` quita prompts pero el sandbox sigue; en `workspace-write` la red está apagada salvo `[sandbox_workspace_write] network_access = true`. `prefix_rule(pattern=["gh"], decision="allow")` en `~/.codex/rules/*.rules` (experimental) corre el comando fuera del sandbox sin prompt. **Probado:** con regla, `gh` tiene red; sin regla, falla. `-c sandbox_workspace_write.network_access=true` da red a la corrida sin tocar la config | https://learn.chatgpt.com/docs/agent-approvals-security · https://learn.chatgpt.com/docs/agent-configuration/rules |
 | Contexto | `~/.codex/AGENTS.override.md` o `AGENTS.md`; en el repo, de la raíz al cwd, uno por directorio: `AGENTS.override.md` > `AGENTS.md` > `project_doc_fallback_filenames`. Tope 32 KiB | https://learn.chatgpt.com/docs/agent-configuration/agents-md |
 
 ## GitHub Copilot CLI (sin probar)
@@ -125,10 +126,9 @@ URL finales.
 
 ## Sin confirmar
 
-- Claude Code: si lee `~/.agents/skills` (no documentado; probar en la Sesión 2 con un symlink de prueba).
-- Codex: cómo llegan los argumentos a una skill; nombres de las herramientas de `multi_agent`; si un subagente
-  tiene contexto propio (implícito). Probar en la Sesión 2.
-- Codex: si `prefix_rule` con `allow` le da red a `gh` dentro de `workspace-write`.
+Lo de Claude Code y Codex quedó resuelto en la Sesión 2 (filas marcadas **probado**).
+
+
 - Copilot CLI: si el texto tras `/x` llega a la skill; si una skill puede pedir subagentes; si `-p` puede
   escribir solo el mensaje final a archivo.
 - VS Code: subagentes en paralelo.

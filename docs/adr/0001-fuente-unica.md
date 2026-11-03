@@ -1,6 +1,8 @@
 # ADR-0001: Fuente única en formato Agent Skills, adapters por harness y contrato de resultado por PR
 
-- **Estado:** aceptada
+- **Estado:** aceptada. Enmienda de la Sesión 2: el reporte se llama `<skill>-<n>.md` (con `pr-<n>.md`,
+  `pr-review` y `pr-ready` sobre la misma PR en el mismo minuto se pisaban; pasó en el smoke), y se agrega
+  `--run-dir=<ruta>` para que un lote fije el directorio.
 - **Fecha:** 2026-11-02
 - **Contexto previo:** [inventario](../inventory.md), [matriz de harnesses](../harness-matrix.md)
 
@@ -69,14 +71,14 @@ skill, la sección dice que se use `bin/pr-batch`.
 Lo cumplen las **cuatro** skills, también las de una PR, para que el lote nunca tenga que interpretar texto
 libre.
 
-- **Reporte completo** en `<runs>/<timestamp>/pr-<n>.md`, donde `<runs>` es `$AGENT_SKILLS_RUNS` o, si no
+- **Reporte completo** en `<runs>/<timestamp>/<skill>-<n>.md`, donde `<runs>` es `$AGENT_SKILLS_RUNS` o, si no
   existe, `~/.agent-skills/runs`. Nunca dentro del repo revisado. `<timestamp>` es `YYYY-MM-DDTHH-MM` de inicio
   del lote (o de la skill si corre sola). El reporte tiene la tabla de hallazgos, el cuerpo del review publicado
   (o el que se habría publicado con `--dry-run`) y, en `pr-ready` LISTA, el comentario de aprobación.
 - **Última línea del mensaje final**: un JSON de una línea, sin nada después.
 
 ```json
-{"skill":"pr-review","repo":"owner/repo","pr":401,"head":"abc1234","verdict":"REQUEST_CHANGES","max_priority":"P1","findings":{"blocking":2,"suggestion":3,"decision":0},"pending":null,"posted":true,"review_url":"https://github.com/owner/repo/pull/401#pullrequestreview-1","report":"/home/u/.agent-skills/runs/2026-11-02T10-00/pr-401.md","summary":"≤ 60 palabras","error":null}
+{"skill":"pr-review","repo":"owner/repo","pr":401,"head":"abc1234","verdict":"REQUEST_CHANGES","max_priority":"P1","findings":{"blocking":2,"suggestion":3,"decision":0},"pending":null,"posted":true,"review_url":"https://github.com/owner/repo/pull/401#pullrequestreview-1","report":"/home/u/.agent-skills/runs/2026-11-02T10-00/pr-review-401.md","summary":"≤ 60 palabras","error":null}
 ```
 
 | Campo | Valores |
