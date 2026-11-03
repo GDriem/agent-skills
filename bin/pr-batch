@@ -7,6 +7,12 @@ set -euo pipefail
 
 PROG=$(basename "$0")
 SELF=$0
+src=$0
+while [ -L "$src" ]; do
+  link=$(readlink "$src")
+  case "$link" in /*) src=$link ;; *) src=$(dirname "$src")/$link ;; esac
+done
+. "$(cd "$(dirname "$src")" && pwd -P)/lib/batch.sh"
 
 usage() {
   cat <<EOF
@@ -31,8 +37,6 @@ Exit code: 0 if no PR ended in ERROR, 1 if some did, 2 for a usage or setup erro
 EOF
 }
 
-die() { printf '%s: %s\n' "$PROG" "$1" >&2; exit "${2:-2}"; }
-
 # One contract line with no agent behind it (skipped before launch, or a session without a result line).
 synth_line() { # <pr> <verdict> <error> <summary>
   jq -cn --arg skill "$PRB_SKILL" --arg repo "$PRB_REPO" --argjson pr "$1" --arg verdict "$2" \
@@ -41,8 +45,6 @@ synth_line() { # <pr> <verdict> <error> <summary>
       findings:{blocking:0,suggestion:0,decision:0},pending:null,posted:false,review_url:null,
       report:null,summary:$summary,error:$error}'
 }
-
-last_line() { awk 'NF { l = $0 } END { print l }'; }
 
 # ---------------------------------------------------------------------------------------------------
 # Internal mode: one PR. Called by xargs with the configuration in PRB_* variables.
@@ -65,26 +67,12 @@ run_one() {
   [ -n "$PRB_LANG" ] && args="$args --lang=$PRB_LANG"
   [ -n "$PRB_FOCUS" ] && args="$args --focus=\"${PRB_FOCUS//\"/\'}\""
 
-  case "$PRB_HARNESS" in
-    claude)
-      raw="$PRB_WORK/pr-$n.claude.json"; log="$PRB_WORK/pr-$n.claude.err"
-      local tools='Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm *),Read,Write,Glob,Grep'
-      local cmd=(claude -p "/$PRB_SKILL $args" --output-format json
-        --add-dir "$PRB_RUN_DIR" --add-dir "$PRB_TMP" --allowedTools "$tools")
-      [ -n "$PRB_MODEL" ] && cmd+=(--model "$PRB_MODEL")
-      "${cmd[@]}" < /dev/null > "$raw" 2> "$log" || true
-      line=$(jq -r '.result // empty' "$raw" 2>/dev/null | last_line || true)
-      ;;
-    codex)
-      raw="$PRB_WORK/pr-$n.codex.txt"; log="$PRB_WORK/pr-$n.codex.log"
-      local cmd=(codex exec -C "$PWD" --skip-git-repo-check -s workspace-write -c approval_policy=never
-        -c sandbox_workspace_write.network_access=true --add-dir "$PRB_RUN_DIR" -o "$raw")
-      [ -n "$PRB_MODEL" ] && cmd+=(-m "$PRB_MODEL")
-      cmd+=("\$$PRB_SKILL $args")
-      "${cmd[@]}" < /dev/null > "$log" 2>&1 || true
-      line=$(last_line < "$raw" 2>/dev/null || true)
-      ;;
-  esac
+  raw="$PRB_WORK/pr-$n.$PRB_HARNESS.out"; log="$PRB_WORK/pr-$n.$PRB_HARNESS.log"
+  local prompt="/$PRB_SKILL $args"
+  [ "$PRB_HARNESS" = codex ] && prompt="\$$PRB_SKILL $args"
+  line=$(BATCH_MODEL=$PRB_MODEL BATCH_ADD_DIRS="$PRB_RUN_DIR:$PRB_TMP" \
+    BATCH_TOOLS='Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm *),Read,Write,Glob,Grep' \
+    headless_run "$PRB_HARNESS" "$prompt" "$raw" "$log")
 
   if line=$(jq -ce --argjson n "$n" 'select(type == "object" and .pr == $n)' <<<"$line" 2>/dev/null); then
     printf '%s\n' "$line" > "$out"
@@ -131,18 +119,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-case "$harness" in
-  claude|codex) ;;
-  copilot|gemini|cursor)
-    die "harness '$harness' is not implemented yet in pr-batch; see adapters/ and docs/harness-matrix.md" ;;
-  "") die "--harness is required (claude or codex)" ;;
-  *) die "unknown harness: $harness" ;;
-esac
-case "$parallel" in ''|*[!0-9]*|0) die "--parallel must be an integer >= 1" ;; esac
-
-for bin in gh jq awk "$harness"; do
-  command -v "$bin" >/dev/null 2>&1 || die "'$bin' is not on PATH"
-done
+check_harness "$harness"
+check_parallel "$parallel"
+check_bins gh jq awk "$harness"
 
 # Retry: PRs, run dir, repo and skill come from the previous summary unless given.
 if [ -n "$retry" ]; then
@@ -190,12 +169,8 @@ if [ ${#prs[@]} -eq 0 ]; then
   exit 0
 fi
 
-if [ -z "$run_dir" ]; then
-  runs=${AGENT_SKILLS_RUNS:-$HOME/.agent-skills/runs}
-  run_dir="$runs/$(date +%Y-%m-%dT%H-%M)"
-fi
-mkdir -p "$run_dir"
-run_dir=$(cd "$run_dir" && pwd)
+[ -n "$run_dir" ] || run_dir=$(default_run_dir)
+run_dir=$(abs_dir "$run_dir")
 
 echo "$PROG: $skill on ${#prs[@]} PR(s) of $repo with $harness: ${prs[*]}"
 echo "  parallel $parallel, model ${model:-harness default}, run dir $run_dir$([ "$dry" = 1 ] && echo ', dry run')"

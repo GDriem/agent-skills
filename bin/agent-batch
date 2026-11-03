@@ -1,0 +1,475 @@
+#!/usr/bin/env bash
+# agent-batch: run a task graph with one headless harness session per task, in dependency waves.
+# Read tasks of a wave run in parallel; write tasks run one after another on the working tree.
+# Universal fallback for the orchestrate skill, and usable from cron or CI. See README.md and adapters/.
+# Works with the bash 3.2 that ships with macOS: no `wait -n`, no associative arrays, no mapfile.
+
+set -euo pipefail
+
+PROG=$(basename "$0")
+SELF=$0
+src=$0
+while [ -L "$src" ]; do
+  link=$(readlink "$src")
+  case "$link" in /*) src=$link ;; *) src=$(dirname "$src")/$link ;; esac
+done
+. "$(cd "$(dirname "$src")" && pwd -P)/lib/batch.sh"
+
+usage() {
+  cat <<EOF
+Usage: $PROG --harness claude|codex [options] (--tasks FILE | --task PROMPT... )
+
+  --tasks FILE           task graph: the graph.json written by the orchestrate skill ({"tasks":[...]})
+                         or a bare JSON array of tasks (id, title, kind, deps, files, tier, effort,
+                         prompt, done, commit)
+  --task PROMPT          a free task (repeatable); ids t1, t2, ... in order; kind "write" unless
+                         --read-only
+  --task-file F          a free task whose prompt is the content of F (repeatable)
+  --wave                 start a new wave: the next free tasks depend on every task of the previous wave
+  --harness H            claude or codex (copilot, gemini and cursor are not implemented yet)
+  --parallel N           read sessions at a time, default 3; write tasks always run one at a time
+  --model M              model for every session (overrides the tiers)
+  --read-only            every task is a read task
+  --commit               one commit per successful write task (clean tree, not the default branch)
+  --verify "label=cmd"   a check run from the repository root after the tasks (repeatable)
+  --allow-tool T         extra tool for claude sessions, e.g. "Bash(npm *)" (repeatable)
+  --only IDS             run only these task ids of an earlier run (needs --run-dir with its summary)
+  --run-dir DIR          graph, reports and summary go here (default: \$AGENT_SKILLS_RUNS or
+                         ~/.agent-skills/runs, plus a timestamp and "-orchestrate")
+  --retry-failed DIR     rerun only the failed and blocked tasks of DIR/summary.json, in DIR
+  --dry-run              print the waves and the first prompts; launch nothing
+  --yes                  do not ask before a graph with write tasks (required when stdin is not a
+                         terminal)
+
+Exit code: 0 if every task ended ok, 1 if some did not, 2 for a usage or setup error.
+EOF
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Shared pieces
+
+# The task prompt of skills/orchestrate/references/contract.md, for task <id>, with the lines in <done>.
+PROMPT_JQ='
+  def kind_of: if $ro then "read" else (.kind // "write") end;
+  def fence: if (.files // []) | length > 0 then .files | join(", ") else "the scope described above" end;
+  (.tasks[] | select(.id == $id)) as $t
+  | ($done | map({key: .task, value: .}) | from_entries) as $by
+  | [($t.deps // [])[] | select($by[.] != null) | $by[.]
+      | "- [\(.task)] \(.summary)"
+        + (if (.artifacts // []) | length > 0 then " · artifacts: \(.artifacts | join(", "))" else "" end)] as $ctx
+  | ($t | kind_of) as $kind
+  | [$t.prompt, "", "--- Execution rules ---",
+     "You have no access to any earlier conversation, and no other agent is working on your files.",
+     (if $kind == "read"
+        then "READ-ONLY: you must not create, edit or delete any file in the repository. Report only. Writing your report under \($run_dir) is allowed."
+        else "You may edit files, but ONLY within: \($t | fence). Do not touch anything else. Do not commit and do not push." end),
+     "Scope: \($t | fence)",
+     "Done when: \($t.done // "the task above is complete and self-consistent.")",
+     (if ($ctx | length) > 0
+        then ("Conclusions of the tasks you depend on (read their artifact files yourself if you need detail):", $ctx[])
+        else empty end),
+     "If you produce anything longer than a short summary (a report, a plan, an inventory), write it to \($run_dir)/orchestrate-\($t.id).md and list that path in artifacts.",
+     "Nobody can answer questions in this session. If you cannot finish, set status to \"failed\" and say why in error instead of guessing or half-doing it.",
+     "Your final message must end with exactly one line of JSON and nothing after it:",
+     ({skill: "orchestrate", task: $t.id, kind: $kind, status: "ok", summary: "...", files_changed: [],
+       artifacts: [], follow_ups: [], error: null} | tojson),
+     "summary: at most 60 words. files_changed: at most 15 repository-relative paths. Never put file contents, diffs or command output in any field."]
+  | join("\n")'
+
+# One task line with no agent behind it.
+synth_line() { # <id> <status> <error> <summary>
+  jq -c --arg id "$1" --arg status "$2" --arg error "$3" --arg summary "$4" --argjson ro "$AB_RO" '
+    (.tasks[] | select(.id == $id)) as $t
+    | {skill: "orchestrate", task: $id, kind: (if $ro then "read" else ($t.kind // "write") end),
+       status: $status, summary: $summary, files_changed: [], artifacts: [], follow_ups: [], error: $error}' \
+    "$AB_GRAPH"
+}
+
+# All lines written so far, as one JSON array.
+done_lines() { { cat "$AB_WORK"/line-*.json 2>/dev/null || true; } | jq -s '.'; }
+
+# ---------------------------------------------------------------------------------------------------
+# Internal mode: one task. Called by xargs (reads) or directly (writes), configuration in AB_* variables.
+run_one() {
+  local id=$1 out="$AB_WORK/line-$1.json" task kind tier effort model prompt line
+  local raw="$AB_WORK/task-$1.$AB_HARNESS.out" log="$AB_WORK/task-$1.$AB_HARNESS.log"
+
+  task=$(jq -c --arg id "$id" '.tasks[] | select(.id == $id)' "$AB_GRAPH")
+  kind=$(jq -r --argjson ro "$AB_RO" 'if $ro then "read" else (.kind // "write") end' <<<"$task")
+  tier=$(jq -r '.tier // "default"' <<<"$task")
+  effort=$(jq -r '.effort // empty' <<<"$task")
+  prompt=$(jq -r --arg id "$id" --arg run_dir "$AB_RUN_DIR" --argjson ro "$AB_RO" \
+    --argjson done "$(cat "$AB_WORK/done.json")" "$PROMPT_JQ" "$AB_GRAPH")
+
+  # Tiers (adapters/<harness>.md): claude picks a model, codex a reasoning effort. --model wins.
+  model=$AB_MODEL
+  case "$AB_HARNESS:$tier" in
+    claude:small) [ -n "$model" ] || model=haiku ;;
+    claude:large) [ -n "$model" ] || model=opus ;;
+    codex:small) [ -n "$effort" ] || effort=low ;;
+    codex:large) [ -n "$effort" ] || effort=high ;;
+  esac
+
+  local tools='Read,Glob,Grep,Write,Bash(git *),Bash(ls *),Bash(wc *),Bash(jq *),Bash(mkdir *),Bash(date *)'
+  local permission=""
+  if [ "$kind" = write ]; then tools="$tools,Edit,MultiEdit"; permission=acceptEdits; fi
+  [ -z "$AB_ALLOW" ] || tools="$tools,$AB_ALLOW"
+
+  line=$(BATCH_MODEL=$model BATCH_EFFORT=$effort BATCH_TOOLS=$tools BATCH_PERMISSION=$permission \
+    BATCH_ADD_DIRS="$AB_RUN_DIR" BATCH_WORKDIR="$AB_ROOT" headless_run "$AB_HARNESS" "$prompt" "$raw" "$log")
+
+  if line=$(jq -ce --arg id "$id" --arg kind "$kind" '
+      select(type == "object" and .task == $id)
+      | .skill = "orchestrate" | .kind = $kind
+      | .status = (if .status == "ok" then "ok" else "failed" end)
+      | .files_changed = ((.files_changed // [])[:15]) | .artifacts = (.artifacts // [])
+      | .follow_ups = (.follow_ups // [])
+      | .error = (if .status == "ok" then null else (.error // "the agent gave no reason") end)' <<<"$line" 2>/dev/null); then
+    printf '%s\n' "$line" > "$out"
+  else
+    synth_line "$id" failed "no result line (session log: $log)" "The session ended without a result line." > "$out"
+  fi
+}
+
+if [ "${1:-}" = "--one" ]; then
+  run_one "$2"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------------------------------
+# Arguments
+
+harness="" parallel=3 model="" read_only=0 commit=0 dry=0 yes=0 run_dir="" retry="" only="" tasks_file=""
+free=() verify=() allow=""
+wave=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --harness) harness=${2:-}; shift 2 ;;
+    --harness=*) harness=${1#*=}; shift ;;
+    --tasks) tasks_file=${2:-}; shift 2 ;;
+    --tasks=*) tasks_file=${1#*=}; shift ;;
+    --task) free+=("$wave"$'\t'"${2:-}"); shift 2 ;;
+    --task=*) free+=("$wave"$'\t'"${1#*=}"); shift ;;
+    --task-file|--task-file=*)
+      f=${2:-}; [ "$1" = --task-file ] && shift 2 || { f=${1#*=}; shift; }
+      [ -f "$f" ] || die "no such task file: $f"
+      free+=("$wave"$'\t'"$(cat "$f")") ;;
+    --wave) wave=$((wave + 1)); shift ;;
+    --parallel) parallel=${2:-}; shift 2 ;;
+    --parallel=*) parallel=${1#*=}; shift ;;
+    --model) model=${2:-}; shift 2 ;;
+    --model=*) model=${1#*=}; shift ;;
+    --verify) verify+=("${2:-}"); shift 2 ;;
+    --verify=*) verify+=("${1#*=}"); shift ;;
+    --allow-tool) allow="${allow:+$allow,}${2:-}"; shift 2 ;;
+    --allow-tool=*) allow="${allow:+$allow,}${1#*=}"; shift ;;
+    --only) only=${2:-}; shift 2 ;;
+    --only=*) only=${1#*=}; shift ;;
+    --run-dir) run_dir=${2:-}; shift 2 ;;
+    --run-dir=*) run_dir=${1#*=}; shift ;;
+    --retry-failed) retry=${2:-}; shift 2 ;;
+    --retry-failed=*) retry=${1#*=}; shift ;;
+    --read-only) read_only=1; shift ;;
+    --commit) commit=1; shift ;;
+    --dry-run) dry=1; shift ;;
+    --yes) yes=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1 (see --help)" ;;
+  esac
+done
+
+check_harness "$harness"
+check_parallel "$parallel"
+check_bins jq awk git "$harness"
+[ "$harness" = claude ] || [ -z "$allow" ] || echo "$PROG: --allow-tool only applies to claude; ignored" >&2
+for v in ${verify[@]+"${verify[@]}"}; do
+  case "$v" in ?*=?*) ;; *) die "--verify takes \"label=command\": $v" ;; esac
+done
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+tmp_root=${TMPDIR:-/tmp}
+work=$(mktemp -d "${tmp_root%/}/agent-batch.XXXXXX")
+
+# Retry and --only: graph and earlier lines come from the run directory.
+if [ -n "$retry" ]; then
+  [ -n "$only" ] && die "--retry-failed and --only do not go together"
+  run_dir=$retry
+  [ -f "$run_dir/summary.json" ] || die "no summary.json in $run_dir"
+  only=$(jq -r '[.tasks[] | select(.status == "failed" or .status == "blocked") | .task] | join(",")' "$run_dir/summary.json")
+  if [ -z "$only" ]; then echo "No failed or blocked task in $run_dir/summary.json; nothing to retry."; exit 0; fi
+fi
+if [ -n "$only" ]; then
+  [ -n "$run_dir" ] || die "--only needs --run-dir of the earlier run"
+  [ -f "$run_dir/summary.json" ] && [ -f "$run_dir/graph.json" ] || die "--only needs graph.json and summary.json in $run_dir"
+  [ -z "$tasks_file" ] && [ ${#free[@]} -eq 0 ] || die "--only reuses the graph of $run_dir; give no tasks"
+  tasks_file="$run_dir/graph.json"
+fi
+
+# Graph: a file, or the free tasks (each depends on every task of the previous wave).
+graph="$work/graph.json"
+if [ -n "$tasks_file" ]; then
+  [ ${#free[@]} -eq 0 ] || die "give --tasks or --task, not both"
+  [ -f "$tasks_file" ] || die "no such file: $tasks_file"
+  jq 'if type == "array" then {tasks: .} else . end' "$tasks_file" > "$graph" 2>/dev/null ||
+    die "$tasks_file is not valid JSON"
+else
+  [ ${#free[@]} -gt 0 ] || die "no tasks: give --tasks FILE or --task PROMPT (see --help)"
+  printf '%s\n' "${free[@]}" | jq -R 'split("\t") | {wave: (.[0] | tonumber), prompt: (.[1:] | join("\t"))}' |
+    jq -s '{prompt: null, flags: null,
+      tasks: (to_entries | map(.value + {id: "t\(.key + 1)"}) as $t
+        | $t | map(. as $x | {id: $x.id, title: ($x.prompt | split("\n")[0] | .[:60]), kind: "write",
+            deps: [$t[] | select(.wave == $x.wave - 1) | .id], files: [], tier: "default", effort: null,
+            prompt: $x.prompt, done: null, commit: null}))}' > "$graph"
+fi
+jq -e '(.tasks | type == "array" and length > 0)
+       and all(.tasks[]; (.id | type == "string" and test("^[A-Za-z0-9_.-]+$")) and (.prompt | type == "string"))
+       and ((.tasks | map(.id) | unique | length) == (.tasks | length))' "$graph" >/dev/null ||
+  die "invalid graph: every task needs a unique id ([A-Za-z0-9_.-]) and a prompt"
+unknown=$(jq -r '(.tasks | map(.id)) as $ids | [.tasks[] | .id as $i | (.deps // [])[] | select(. as $d | $ids | index($d) | not) | "\($i)->\(.)"] | join(", ")' "$graph")
+[ -z "$unknown" ] || echo "$PROG: unknown dependencies, ignored: $unknown" >&2
+
+[ "$read_only" = 1 ] && commit=0
+ro_json=$([ "$read_only" = 1 ] && echo true || echo false)
+writes=$(jq --argjson ro "$ro_json" '[.tasks[] | select(($ro | not) and (.kind // "write") != "read")] | length' "$graph")
+
+if [ "$commit" = 1 ] && [ "$dry" = 0 ]; then
+  git rev-parse --show-toplevel >/dev/null 2>&1 || die "--commit needs a git repository"
+  dirty=$(git -C "$root" status --porcelain)
+  [ -z "$dirty" ] || die "--commit needs a clean tree; commit or stash first:
+$dirty"
+  branch=$(git -C "$root" rev-parse --abbrev-ref HEAD)
+  default=$(git -C "$root" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  default=${default#origin/}
+  case "$branch" in "${default:-main}"|main|master) die "--commit refuses to commit on the default branch ($branch); create a branch first" ;; esac
+fi
+
+[ -n "$run_dir" ] || run_dir=$(default_run_dir orchestrate)
+run_dir=$(abs_dir "$run_dir")
+[ "$tasks_file" -ef "$run_dir/graph.json" ] 2>/dev/null || cp "$graph" "$run_dir/graph.json"
+graph="$run_dir/graph.json"
+
+export AB_HARNESS=$harness AB_GRAPH=$graph AB_RUN_DIR=$run_dir AB_WORK=$work AB_MODEL=$model \
+  AB_RO=$ro_json AB_ALLOW=$allow AB_ROOT=$root
+
+# Which tasks run: all, or --only (the others keep their earlier lines).
+selected=$(jq -c --arg only "$only" '[.tasks[].id] as $all
+  | if $only == "" then $all else ($only | split(",") | map(select(. != ""))) end' "$graph")
+bad=$(jq -r --argjson sel "$selected" '[.tasks[].id] as $all | [$sel[] | select(. as $s | $all | index($s) | not)] | join(", ")' "$graph")
+[ -z "$bad" ] || die "unknown task id(s) in --only: $bad"
+if [ -n "$only" ]; then
+  jq -c --argjson sel "$selected" '.tasks[] | select(.task as $t | $sel | index($t) | not)' "$run_dir/summary.json" |
+  while IFS= read -r l; do
+    printf '%s\n' "$l" > "$work/line-$(jq -r .task <<<"$l").json"
+  done
+fi
+
+total=$(jq '.tasks | length' "$graph")
+echo "$PROG: $(jq length <<<"$selected") of $total task(s) with $harness, $writes write task(s)"
+echo "  parallel $parallel, model ${model:-by tier}, root $root, run dir $run_dir$([ "$dry" = 1 ] && echo ', dry run')"
+
+# Ready and blocked tasks among the selected ones without a line, given the lines in <done map>.
+#   prints "ready<TAB>id<TAB>kind" or "blocked<TAB>id<TAB>dep,dep"
+next_wave() { # <done map: {"id":"status"}>
+  jq -r --argjson done "$1" --argjson sel "$selected" --argjson ro "$AB_RO" '
+    (.tasks | map(.id)) as $ids
+    | .tasks[] | select(.id as $i | ($sel | index($i)) and ($done[$i] == null))
+    | [(.deps // [])[] | select(. as $d | $ids | index($d))] as $deps
+    | select(all($deps[]; $done[.] != null))
+    | [$deps[] | select($done[.] != "ok")] as $bad
+    | if ($bad | length) > 0 then "blocked\t\(.id)\t\($bad | join(","))"
+      else "ready\t\(.id)\t\(if $ro then "read" else (.kind // "write") end)" end' "$graph"
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Dry run: the waves as if every task ended ok, and the prompt of the first wave's tasks.
+
+if [ "$dry" = 1 ]; then
+  sim='{}' n=0
+  while :; do
+    rows=$(next_wave "$sim")
+    [ -n "$rows" ] || break
+    n=$((n + 1))
+    echo; echo "Wave $n:"
+    while IFS=$'\t' read -r state id extra; do
+      echo "  $id ($extra) $(jq -r --arg id "$id" '.tasks[] | select(.id == $id) | .title // ""' "$graph")"
+      if [ "$n" = 1 ]; then
+        echo '[]' > "$work/done.json"
+        jq -r --arg id "$id" --arg run_dir "$run_dir" --argjson ro "$AB_RO" --argjson done '[]' "$PROMPT_JQ" "$graph" |
+          sed 's/^/    | /'
+      fi
+      sim=$(jq -c --arg id "$id" '.[$id] = "ok"' <<<"$sim")
+    done <<<"$rows"
+  done
+  left=$(jq -r --argjson done "$sim" --argjson sel "$selected" '[$sel[] | select($done[.] == null)] | join(", ")' "$graph")
+  [ -z "$left" ] || echo "Dependency cycle, would be blocked: $left"
+  rm -rf "$work"
+  jq -cn --arg run_dir "$run_dir" --arg graph "$graph" --argjson total "$total" \
+    '{skill: "orchestrate", run_dir: $run_dir, graph: $graph, total: $total,
+      counts: {ok: 0, failed: 0, blocked: 0, skipped: 0}, failed: [], dry_run: true, commits: null,
+      verify: null, summary_json: null, summary_md: null}'
+  exit 0
+fi
+
+if [ "$writes" -gt 0 ] && [ "$yes" = 0 ]; then
+  if [ -t 0 ]; then
+    printf '%s write task(s) will edit files under %s. Continue? [y/N] ' "$writes" "$root"
+    read -r answer
+    case "$answer" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 0 ;; esac
+  else
+    die "a graph with write tasks needs --yes (or --read-only, or --dry-run) when stdin is not a terminal"
+  fi
+fi
+
+# ---------------------------------------------------------------------------------------------------
+# Run
+
+commit_task() { # <id>: one commit with the task's fence, recorded in its line
+  local id=$1 out="$AB_WORK/line-$1.json" msg c files=()
+  msg=$(jq -r --arg id "$id" '.tasks[] | select(.id == $id) | .commit // empty' "$graph")
+  while IFS= read -r f; do [ -n "$f" ] && files+=("$f"); done < <(jq -r --arg id "$id" '.tasks[] | select(.id == $id) | (.files // [])[]' "$graph")
+  if [ -z "$msg" ]; then c='{"committed":false,"sha":null,"error":"the task has no commit message"}'
+  elif [ ${#files[@]} -eq 0 ]; then c='{"committed":false,"sha":null,"error":"the task has no files to stage"}'
+  elif ! git -C "$root" add -A -- "${files[@]}" 2>"$work/commit-$id.err"; then
+    c=$(jq -cn --arg e "$(last_line < "$work/commit-$id.err")" '{committed:false,sha:null,error:$e}')
+  elif git -C "$root" diff --cached --quiet; then c='{"committed":false,"sha":null,"error":"nothing to commit"}'
+  elif git -C "$root" commit -q -m "$msg" 2>"$work/commit-$id.err"; then
+    c=$(jq -cn --arg sha "$(git -C "$root" rev-parse --short HEAD)" '{committed:true,sha:$sha,error:null}')
+  else
+    c=$(jq -cn --arg e "$(last_line < "$work/commit-$id.err")" '{committed:false,sha:null,error:$e}')
+  fi
+  jq -c --argjson c "$c" '.commit = $c' "$out" > "$out.tmp" && mv "$out.tmp" "$out"
+}
+
+status_map() { done_lines | jq -c 'map({key: .task, value: .status}) | from_entries'; }
+
+while :; do
+  rows=$(next_wave "$(status_map)")
+  if [ -z "$rows" ]; then
+    left=$(jq -r --argjson done "$(status_map)" --argjson sel "$selected" '$sel[] | select($done[.] == null)' "$graph")
+    for id in $left; do
+      synth_line "$id" blocked "dependency cycle" "Not run: dependency cycle." > "$work/line-$id.json"
+    done
+    break
+  fi
+  done_lines > "$work/done.json"
+  reads=() wtasks=()
+  while IFS=$'\t' read -r state id extra; do
+    case "$state" in
+      blocked) synth_line "$id" blocked "dependency not ok: $extra" "Not run: a dependency did not end ok." > "$work/line-$id.json"
+               echo "[$id] blocked by $extra" ;;
+      ready) if [ "$extra" = read ]; then reads+=("$id"); else wtasks+=("$id"); fi ;;
+    esac
+  done <<<"$rows"
+  if [ ${#reads[@]} -gt 0 ]; then
+    printf '%s\n' "${reads[@]}" | xargs -P "$parallel" -I{} "$SELF" --one {} || true
+    for id in "${reads[@]}"; do echo "[$id] $(jq -r .status "$work/line-$id.json" 2>/dev/null || echo failed)"; done
+  fi
+  for id in ${wtasks[@]+"${wtasks[@]}"}; do
+    "$SELF" --one "$id" || true
+    [ -s "$work/line-$id.json" ] || synth_line "$id" failed "the task session did not run" "No result." > "$work/line-$id.json"
+    st=$(jq -r .status "$work/line-$id.json")
+    [ "$commit" = 1 ] && [ "$st" = ok ] && commit_task "$id"
+    echo "[$id] $st$(jq -r 'if .commit then " · commit \(.commit.sha // "no (\(.commit.error))")" else "" end' "$work/line-$id.json")"
+  done
+  for id in ${reads[@]+"${reads[@]}"}; do
+    [ -s "$work/line-$id.json" ] || synth_line "$id" failed "the task session did not run" "No result." > "$work/line-$id.json"
+  done
+done
+
+# Checks, only if some task changed a file.
+verify_json=null
+touched=$(done_lines | jq '[.[] | select(.status == "ok" and (.files_changed | length) > 0)] | length')
+if [ ${#verify[@]} -gt 0 ] && [ "$read_only" = 0 ] && [ "$touched" -gt 0 ]; then
+  checks="$work/checks.jsonl"; : > "$checks"
+  i=0
+  for v in "${verify[@]}"; do
+    i=$((i + 1)); label=${v%%=*}; cmd=${v#*=}
+    if (cd "$root" && bash -c "$cmd") > "$work/verify-$i.log" 2>&1; then
+      jq -cn --arg l "$label" --arg c "$cmd" '{label:$l,cmd:$c,passed:true,error:null}' >> "$checks"
+    else
+      jq -cn --arg l "$label" --arg c "$cmd" --arg e "$(last_line < "$work/verify-$i.log" | cut -c1-200)" \
+        '{label:$l,cmd:$c,passed:false,error:$e}' >> "$checks"
+    fi
+    echo "check $label: $(tail -n 1 "$checks" | jq -r 'if .passed then "pass" else "FAIL" end')"
+  done
+  verify_json=$(jq -s '{all_passed: all(.[]; .passed), checks: .}' "$checks")
+elif [ ${#verify[@]} -gt 0 ]; then
+  echo "Checks skipped: no task changed a file."
+fi
+
+# ---------------------------------------------------------------------------------------------------
+# Summary
+
+summary_json="$run_dir/summary.json"
+jq -c '.tasks[].id' "$graph" | jq -r . | while IFS= read -r id; do
+  if [ -s "$work/line-$id.json" ]; then cat "$work/line-$id.json"
+  else synth_line "$id" skipped "never launched" "Not run."; fi
+done | jq -s --argjson verify "$verify_json" '{tasks: ., verify: $verify}' > "$summary_json"
+
+flags="--harness $harness --parallel $parallel"
+[ -n "$model" ] && flags="$flags --model $model"
+[ "$read_only" = 1 ] && flags="$flags --read-only"
+[ "$commit" = 1 ] && flags="$flags --commit"
+
+table=$(jq -r --slurpfile g "$graph" --argjson commit "$([ "$commit" = 1 ] && echo true || echo false)" '
+  def cell: tostring | gsub("\\|"; "\\|") | gsub("\n"; " ");
+  ($g[0].tasks | map({key: .id, value: .}) | from_entries) as $t
+  | (if $commit then "| id | Task | Kind | Tier | Status | Files | Commit | Summary |\n|---|---|---|---|---|---|---|---|"
+     else "| id | Task | Kind | Tier | Status | Files | Summary |\n|---|---|---|---|---|---|---|" end),
+  (.tasks[] | "| \(.task) | \(($t[.task].title // "") | cell) | \(.kind) | \($t[.task].tier // "default") | \(.status) | \(.files_changed | length) |"
+     + (if $commit then " \(.commit.sha // "—") |" else "" end) + " \(.summary | cell) |")' "$summary_json")
+problems=$(jq -r '.tasks[] | select(.status != "ok") | "- \(.task) \(.status): \(.error)"' "$summary_json")
+failed=$(jq -r '[.tasks[] | select(.status == "failed" or .status == "blocked") | .task] | join(",")' "$summary_json")
+uncommitted=$(jq -r '.tasks[] | select(.commit and (.commit.committed | not)) | "- \(.task): \(.commit.error)"' "$summary_json")
+
+summary_md="$run_dir/summary.md"
+{
+  echo "# orchestrate run"
+  echo
+  echo "- Date: $(date '+%Y-%m-%d %H:%M')"
+  echo "- Flags: $flags"
+  echo "- Root: $root"
+  echo "- Run directory: $run_dir"
+  echo
+  echo "$table"
+  [ -z "$problems" ] || { echo; echo "## Failures and blocked"; echo; echo "$problems"; }
+  if [ "$commit" = 1 ]; then
+    echo; echo "## Commits"; echo
+    jq -r '.tasks[] | select(.commit.committed) | "- \(.commit.sha) \(.task)"' "$summary_json"
+    [ -z "$uncommitted" ] || { echo; echo "Not committed (their changes are loose in the tree):"; echo "$uncommitted"; }
+    echo; echo "Branch $(git -C "$root" rev-parse --abbrev-ref HEAD); nothing was pushed."
+  fi
+  if [ "$verify_json" != null ]; then
+    echo; echo "## Checks"; echo
+    jq -r '.verify.checks[] | "- \(.label): \(if .passed then "pass" else "FAIL: \(.error)" end)"' "$summary_json"
+  fi
+  arts=$(jq -r '.tasks[] | .artifacts[]' "$summary_json")
+  [ -z "$arts" ] || { echo; echo "## Artifacts"; echo; echo "$arts" | sed 's/^/- /'; }
+  pend=$(jq -r '.tasks[] | .follow_ups[]' "$summary_json")
+  [ -z "$pend" ] || { echo; echo "## Pending"; echo; echo "$pend" | sed 's/^/- /'; }
+  if [ -n "$failed" ]; then
+    echo; echo "## Retry"; echo
+    echo '```bash'
+    echo "$SELF $flags --retry-failed $run_dir"
+    echo '```'
+  fi
+} > "$summary_md"
+
+echo
+echo "$table"
+[ -z "$problems" ] || { echo; echo "$problems"; }
+[ -z "$failed" ] || { echo; echo "Retry: $SELF $flags --retry-failed $run_dir"; }
+echo
+echo "Summary: $summary_md"
+echo "Session logs: $work"
+
+jq -c --arg run_dir "$run_dir" --arg graph "$graph" --arg sj "$summary_json" --arg sm "$summary_md" \
+  --argjson commit "$([ "$commit" = 1 ] && echo true || echo false)" '
+  {skill: "orchestrate", run_dir: $run_dir, graph: $graph, total: (.tasks | length),
+   counts: (reduce .tasks[] as $x ({ok: 0, failed: 0, blocked: 0, skipped: 0}; .[$x.status] += 1)),
+   failed: [.tasks[] | select(.status == "failed" or .status == "blocked") | .task], dry_run: false,
+   commits: (if $commit then [.tasks[] | select(.commit.committed) | .commit.sha] else null end),
+   verify: (if .verify then {all_passed: .verify.all_passed} else null end),
+   summary_json: $sj, summary_md: $sm}' "$summary_json"
+
+[ -z "$failed" ]
