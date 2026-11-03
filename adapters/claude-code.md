@@ -14,7 +14,9 @@ what was tested in this repo is marked **probado**, the rest comes from the docs
 - `~/.agents/skills` is **not** read (**probado**: a skill there answered "not installed"; the same skill under
   `.claude/skills` ran). This harness needs its own destination.
 - A skill wins over a command with the same name in `~/.claude/commands`, so the skill can be installed before
-  the old command is removed (documented).
+  the old command is removed (documented, and **probado**: with both present, `claude -p "/pr-review …"` ran the
+  skill and emitted the contract line). `install.sh --harness claude-code --retire-conflicts` moves the old
+  command to the backup afterwards.
 - No extra metadata: the neutral frontmatter (`name`, `description`) is enough.
 
 ## Invocation and arguments

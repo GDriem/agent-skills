@@ -7,8 +7,9 @@ Hay una sola fuente: cada skill es una carpeta `skills/<nombre>/SKILL.md` en el 
 Skills, y un script la instala en cada harness. Las versiones por lote (`-all`) corren **cada PR en un agente
 aparte con su propio contexto**, así que revisar diez PRs cuesta lo mismo por PR que revisar una.
 
-> **Estado:** en construcción. Ver [PLAN.md](PLAN.md). Hasta que cierre la Fase 3, las secciones de
-> instalación y uso describen cómo va a quedar, no lo que ya funciona.
+> **Estado:** en construcción. Ver [PLAN.md](PLAN.md). La instalación y las cuatro skills de PR funcionan en
+> Claude Code y Codex; Copilot, Gemini y Cursor están documentados pero sin probar, y `orchestrate` todavía no
+> está.
 
 ## Skills
 
@@ -34,10 +35,12 @@ escrito en la skill. Por defecto escriben en el idioma de la PR; `--lang=en|es` 
 ```bash
 git clone git@github.com:GDriem/agent-skills.git ~/Source/agent-skills
 cd ~/Source/agent-skills
-./install.sh                     # detecta qué harnesses tienes y los instala en todos
-./install.sh --harness codex     # solo uno
-./install.sh --check             # dice qué está instalado y si algo quedó desactualizado
-./install.sh --uninstall
+./install.sh --dry-run           # muestra qué haría, sin tocar nada
+./install.sh                     # detecta qué harnesses tienes, muestra el plan y pide confirmación
+./install.sh --harness codex     # solo uno (repetible o separado por comas; también `all`)
+./install.sh --check             # qué está instalado, qué quedó desactualizado y qué choca
+./install.sh --retire-conflicts  # además retira copias viejas con el mismo nombre (ver abajo)
+./install.sh --uninstall         # quita lo instalado y restaura lo que había antes
 ```
 
 `install.sh` crea symlinks, no copias, así que un `git pull` deja todo al día. Bastan dos destinos a nivel
@@ -53,6 +56,19 @@ usuario, porque todos los harnesses menos Claude Code leen `~/.agents/skills`:
 
 Copilot en VS Code y Cursor también leen `~/.claude/skills`, así que pueden ver cada skill dos veces;
 `install.sh --check` lo avisa. Detalle y fuentes en [docs/harness-matrix.md](docs/harness-matrix.md).
+
+- **Nada se borra sin backup.** Lo que ocupaba un destino (una carpeta, un archivo, un symlink ajeno o roto) se
+  mueve a `~/.agent-skills-backup/<fecha>/<ruta bajo $HOME>` y queda anotado en `manifest.tsv`.
+  `--uninstall` quita solo los symlinks y archivos generados de este checkout y devuelve desde el backup lo que
+  falte en su lugar original.
+- **`--retire-conflicts`** mueve al backup las copias viejas con el nombre de una skill: `~/.codex/skills/<n>`
+  (Codex 0.166 la sigue leyendo y mezcla sus instrucciones con la skill nueva), `~/.codex/prompts/<n>.md`
+  (prompts deprecados) y `~/.claude/commands/<n>.md` (la skill gana, pero el comando sobra). Conviene instalar,
+  probar `/pr-review … --dry-run` y recién entonces retirar.
+- **Codex:** se genera `skills/<n>/agents/openai.yaml` (ignorado por git). Las `-all` llevan
+  `allow_implicit_invocation: false`: no aparecen en la lista implícita y solo corren con `$pr-review-all`.
+- **Gemini (sin probar):** `~/.gemini/commands/<n>.toml` activa la skill y le pasa `{{args}}`.
+- Requiere solo bash 3.2 y coreutils; `HOME=<otro dir> ./install.sh …` instala en otro lado para probar.
 
 ## Uso
 
@@ -124,6 +140,6 @@ skills/<nombre>/SKILL.md     fuente única, sin herramientas propias de un harne
 skills/<nombre>/references/  instrucciones largas que se cargan bajo demanda
 adapters/<harness>.md        cómo se lanza un subagente y dónde se instala, por harness
 bin/pr-batch                 runner universal: una sesión headless por PR
-install.sh                   instala en cada harness y detecta drift
+install.sh                   instala en cada harness, detecta drift y retira copias viejas con backup
 docs/                        inventario, matriz de capacidades por harness y ADRs
 ```

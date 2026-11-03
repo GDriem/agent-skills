@@ -37,7 +37,8 @@ La matriz muestra que:
 - Las `-all` no duplican la lógica de una PR: le dicen a cada agente que lea la `SKILL.md` hermana por ruta
   absoluta (resuelta en tiempo de ejecución desde la ubicación de la propia skill).
 - Metadatos propios de un harness (p. ej. `agents/openai.yaml` de Codex) se generan en la instalación desde el
-  adapter; no viven en `skills/`.
+  adapter; no se versionan (Sesión 4: `install.sh` los escribe en `skills/<n>/agents/`, ignorado por git, para
+  que siga habiendo un solo symlink por skill).
 
 ### 2. Un adapter por harness
 

@@ -61,13 +61,18 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
 
 ### Fase 3: instalación (Sesión 4)
 
-- [ ] `install.sh` con `--harness`, `--check` (drift entre la fuente y lo instalado) y `--uninstall`. Usa
+- [x] `install.sh` con `--harness`, `--check` (drift entre la fuente y lo instalado) y `--uninstall`. Usa
       symlinks y, antes de reemplazar algo, mueve lo que había a `~/.agent-skills-backup/<fecha>/`. Dos
       destinos: `~/.claude/skills` y `~/.agents/skills`; más el envoltorio TOML de Gemini y `agents/openai.yaml`
       de Codex. `--check` avisa del duplicado que ven Copilot VS Code y Cursor (leen ambos destinos).
-- [ ] Reemplazar el port viejo de `~/.codex/skills/pr-*` y `~/.codex/prompts/pr-*` (prompts deprecados en
+- [x] Reemplazar el port viejo de `~/.codex/skills/pr-*` y `~/.codex/prompts/pr-*` (prompts deprecados en
       Codex) y los comandos de `~/.claude/commands/pr-*`. En Claude Code la skill gana al comando de igual
-      nombre (documentado), así que se puede instalar primero y borrar el comando después.
+      nombre (documentado), así que se puede instalar primero y borrar el comando después. Hecho con
+      `install.sh --retire-conflicts`: las 12 copias quedaron en `~/.agent-skills-backup/<fecha>/`.
+- [ ] Pendiente del usuario: el repo de trabajo tiene sus propias copias como **comandos de proyecto**
+      (`.claude/commands/pr-{review,ready}.md` y `.claude/backup-pr-commands/`). La skill de usuario les gana
+      por ser comandos; si fueran skills de proyecto, ganaría la personal (personal > proyecto). Decidir si se
+      borran de ese repo.
 
 ### Fase 4: resto de skills (Sesión 5)
 
@@ -117,3 +122,14 @@ Codex 0.166 ya trae `multi_agent` activado (stable), así que el bloqueo que jus
   `-p`; Codex pasa `fork_turns:"none"` solo con lo que dice `batch.md`. Ajuste tras medir: esperar a los hijos sin
   sondear y validar las líneas en una pasada (−46 % de input en el orquestador de Codex). Sigue la Sesión 4
   (`~/.claude/prompts/agent-skills-sesion4.md`): `install.sh` y retirar las copias viejas.
+- **2026-11-02 (Sesión 4):** Fase 3 cerrada. `install.sh` (bash 3.2, sin `jq`): symlinks a `~/.claude/skills`
+  y `~/.agents/skills`, backup con `manifest.tsv` en `~/.agent-skills-backup/<fecha>/`, `--check`, `--dry-run`,
+  `--retire-conflicts` y `--uninstall` que restaura desde el backup. Probado en un `HOME` falso sembrado
+  (dir viejo, comando, prompt, symlink roto): reinstalar no cambia nada, `--uninstall` devuelve todo y repetirlo
+  no hace nada. En el `HOME` real: Codex primero (4 skills + 4 prompts al backup; `codex exec` lista solo las de
+  `~/.agents/skills`), después Claude Code (smoke `/pr-review … --dry-run` con los comandos todavía presentes:
+  corrió la skill) y recién ahí los 4 comandos al backup. Smokes `--dry-run` en los dos harnesses contra una PR
+  real: contrato válido, `posted:false`, reviews y comentarios iguales antes y después. Probado:
+  `allow_implicit_invocation: false` saca la skill de la lista de Codex y `$x` la sigue cargando; por eso las
+  `-all` lo llevan. Sigue la Sesión 5 (`~/.claude/prompts/agent-skills-sesion5.md`): `orchestrate` neutral y
+  `bin/agent-batch`.
