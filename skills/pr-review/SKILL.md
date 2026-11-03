@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: First-pass review of a GitHub pull request. Reads the diff and the surrounding code, verifies each finding, deduplicates against bot reviewers, and posts one review with inline comments tagged blocker, suggestion or decision. Never approves. Supports --dry-run, --auto, --lang and --focus. Use when asked to review a PR.
+description: First-pass review of a GitHub pull request. Reads the diff and the surrounding code, verifies each finding, deduplicates against bot reviewers, and posts one review with inline comments tagged blocker, suggestion or decision. Never approves. Supports --dry-run, --auto, --light, --lang and --focus. Use when asked to review a PR.
 ---
 
 # pr-review
@@ -19,6 +19,7 @@ after the skill name instead.
 | (empty) | the PR of the current branch |
 | `--auto` | skip the confirmation before posting. Nothing else changes |
 | `--dry-run` | do everything except write to GitHub; print the full preview; ask nothing |
+| `--light` | a cheaper pass for a small PR; stops and asks for a full review when it finds something serious (see "Light mode") |
 | `--lang=en\|es\|…` | force the review language |
 | `--focus="<criteria>"` | extra review criteria for this run; never turns the general review off |
 | `--run-dir=<path>` | where to write the report; set by batch runners (see `references/contract.md`) |
@@ -60,6 +61,37 @@ If you cannot ask the user (headless run, batch agent, or the harness has no way
 - Draft PR: stop with `verdict` `SKIPPED` and `error` "draft".
 - Confirmation before posting without `--auto`: do not post. Write the report, `posted` `false`, and say in
   `summary` that it was not posted because nobody confirmed.
+
+## Light mode
+
+`--light` is for small, low-risk PRs, usually set by a batch that already sorted PRs by size. It narrows the
+steps below; it never lowers the bar for what counts as a finding. Run the steps as written, with these limits:
+
+- **Step 1**: as written.
+- **Step 1b**: only the root context files and the nearest context file of each changed file. No issue tracker,
+  no stack detection.
+- **Step 2**: read each changed file whole at head. Search for callers only when a signature, an exported name
+  or a payload shape changed. No `git fetch`, no tarball, no full tree listing, no running code or tests.
+- **Steps 4 and 6**: read `references/quality-gate.md` and `references/comment-templates.md` only if a candidate
+  finding is left after Step 3.
+- Aim for about eight tool calls in total, with independent reads in parallel.
+
+**Escalate instead of finishing** when any of these holds:
+
+- a candidate finding would be `P0` or `P1`;
+- the change alters what the code does in authentication or authorization, money amounts, a destructive or
+  irreversible write, a schema migration, or the handling of secrets, whatever the file names say. Code that
+  merely sits near those areas or feeds data into them does not count, and neither do build, CI or dependency
+  changes on their own;
+- confirming or ruling out a specific suspected defect needs more than the light limits allow.
+
+Never escalate just to be thorough: with nothing specific suspected, finish the light review.
+
+To escalate: post nothing (also under `--auto`), skip Steps 4–8, write the report with what you saw and why you
+stopped, and end with the final line with `verdict` `COMMENT`, counts at `0`, `posted` `false`, `light` `true`,
+`escalate` `true` and `escalate_reason` (one sentence). The batch runs a full review of that PR next.
+
+A light run that does not escalate finishes normally, with `light` `true` in the final line.
 
 ## Step 0 — Resolve the context
 

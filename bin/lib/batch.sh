@@ -6,6 +6,10 @@ die() { printf '%s: %s\n' "$PROG" "$1" >&2; exit "${2:-2}"; }
 
 last_line() { awk 'NF { l = $0 } END { print l }'; }
 
+last_lines() { # <n>: the last n non-empty lines, in order
+  awk -v n="$1" 'NF { l[++c] = $0 } END { for (i = (c > n ? c - n + 1 : 1); i <= c; i++) print l[i] }'
+}
+
 # Harnesses with a headless runner implemented here.
 check_harness() { # <harness>
   case "$1" in
@@ -29,16 +33,22 @@ check_bins() { # <bin>...
 }
 
 # Default run directory: $AGENT_SKILLS_RUNS or ~/.agent-skills/runs, plus the start time and a suffix.
+# Creates it, and takes -2, -3… when another batch already claimed that minute (mkdir is atomic).
 default_run_dir() { # [suffix]
-  local runs=${AGENT_SKILLS_RUNS:-$HOME/.agent-skills/runs}
-  printf '%s/%s%s\n' "$runs" "$(date +%Y-%m-%dT%H-%M)" "${1:+-$1}"
+  local runs=${AGENT_SKILLS_RUNS:-$HOME/.agent-skills/runs} base i=1 dir
+  base="$runs/$(date +%Y-%m-%dT%H-%M)${1:+-$1}"
+  mkdir -p "$runs" || return 1
+  dir=$base
+  until mkdir "$dir" 2>/dev/null; do i=$((i + 1)); dir="$base-$i"; done
+  printf '%s\n' "$dir"
 }
 
 abs_dir() { # <dir>: create it and print its absolute path
   mkdir -p "$1" && (cd "$1" && pwd)
 }
 
-# One headless session; prints the last non-empty line of its final message, or nothing.
+# One headless session; prints the last non-empty line of its final message (the last BATCH_LINES lines
+# when that is set), or nothing.
 #   headless_run <harness> <prompt> <raw file> <log file>
 # Settings (all optional except BATCH_TOOLS for claude):
 #   BATCH_MODEL       model for the session
@@ -47,6 +57,7 @@ abs_dir() { # <dir>: create it and print its absolute path
 #   BATCH_PERMISSION  claude --permission-mode value
 #   BATCH_ADD_DIRS    directories the session may write to, separated by ":"
 #   BATCH_WORKDIR     working directory of the session (default: the current one)
+#   BATCH_LINES       how many trailing lines of the final message to print (default 1)
 headless_run() {
   local harness=$1 prompt=$2 raw=$3 log=$4 dir old_ifs=$IFS
   local workdir=${BATCH_WORKDIR:-$PWD}
@@ -63,7 +74,7 @@ headless_run() {
       [ -n "${BATCH_MODEL:-}" ] && cmd+=(--model "$BATCH_MODEL")
       [ -n "${BATCH_EFFORT:-}" ] && cmd+=(--effort "$BATCH_EFFORT")
       (cd "$workdir" && "${cmd[@]}") < /dev/null > "$raw" 2> "$log" || true
-      jq -r '.result // empty' "$raw" 2>/dev/null | last_line || true
+      jq -r '.result // empty' "$raw" 2>/dev/null | last_lines "${BATCH_LINES:-1}" || true
       ;;
     codex)
       local cmd=(codex exec -C "$workdir" --skip-git-repo-check -s workspace-write -c approval_policy=never
@@ -73,7 +84,7 @@ headless_run() {
       [ -n "${BATCH_EFFORT:-}" ] && cmd+=(-c "model_reasoning_effort=$BATCH_EFFORT")
       cmd+=("$prompt")
       "${cmd[@]}" < /dev/null > "$log" 2>&1 || true
-      last_line < "$raw" 2>/dev/null || true
+      last_lines "${BATCH_LINES:-1}" < "$raw" 2>/dev/null || true
       ;;
   esac
 }

@@ -50,7 +50,11 @@ skills with `--ephemeral`.
 - **One child per PR**: `spawn_agent` with `task_name` (`review_<n>`), `fork_turns: "none"`, the prompt from
   `batch.md` as `message`, and `model` when `--model` was given (**probado**: the orchestrator passed
   `fork_turns: "none"` on its own, and the children's rollouts record `thread_spawn` with the parent's id and
-  `depth: 1`). Keep at most `--parallel` alive; spawn the next when one finishes.
+  `depth: 1`). Keep at most `--parallel` alive; spawn the next when one finishes. A group of `trivial` PRs is one
+  child (`review_<n1>_<n2>…`) with the group prompt of `batch.md`.
+- **Budget tier** (`trivial` and `small` PRs of `pr-review-all`): `reasoning_effort: "low"`, plus `model` only
+  when `--small-model` was given (Codex has no small/large aliases, as in `orchestrate`). `bin/pr-batch` passes
+  `-c model_reasoning_effort=low` and `-m <small-model>`. `normal` PRs take `--model` or nothing.
 - **Waiting**: `wait_agent` with a long `timeout_ms`. In the first smoke the orchestrator polled with
   `timeout_ms: 10000` and one `sleep`, which cost five extra turns of ~30 k tokens each; `batch.md` now asks for
   the longest wait.

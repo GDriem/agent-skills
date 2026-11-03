@@ -126,3 +126,32 @@ leída 0,1×, escritura 1,25×, output 5× el input), el orquestador es ≈ 53 %
   supera el trabajo de las tareas mismas. Conviene cuando las tareas son grandes o tienen que aislarse (que una
   no vea lo que leyó otra); dos o tres cambios chicos salen más baratos pedidos directo, en una sola sesión.
 - `--only` no reduce mucho ese costo: el orquestador vuelve a leer la skill, el grafo y el resumen anterior.
+
+## Tier por tamaño (2026-11-03, después de la Sesión 6)
+
+Cambios medidos: `pr-review --light`, tier budget para PRs `small`/`trivial`, lotes de triviales y escalado
+(ADR-0001 §4 ter). Mismas PRs, mismas versiones, `--dry-run` y `gh` sin escrituras.
+
+| Corrida | Antes | Después |
+|---|---|---|
+| Claude Code, `pr-review-all` de 2 PRs chicas | 1,71 USD | **0,65 USD** (−62 %) |
+| de eso, los dos hijos | ≈ 1,58 USD | **0,04 USD** (`haiku`, `--light`) |
+| de eso, el orquestador | ≈ 0,13 USD | 0,61 USD |
+| Codex, `pr-review-all` de 2 PRs chicas, input total | 1 725 k (125 k sin caché) | **968 k (100 k)** (−44 %) |
+| Codex, port secuencial viejo, mismo par | 797 k (69 k) | — |
+| Codex, 4 PRs de 2 líneas (3 en un lote + 1 por ruta sensible) | — | 1 239 k (149 k) |
+
+- En Claude Code los hijos casi desaparecen del costo. Ahora el que pesa es el orquestador: 0,61 USD, el 94 % del
+  lote, y más que antes (el anuncio por clase y las líneas nuevas le suman turnos). La próxima palanca es correr el
+  orquestador en un modelo más barato.
+- En Codex el tier budget es solo esfuerzo bajo con el mismo modelo, así que el ahorro viene de `--light`: cada
+  hijo hizo 7–10 llamadas en vez de 16–24. Cada llamada sigue releyendo ~35–40 k de contexto base (la skill y las
+  convenciones), así que una PR cuesta 300–400 k aunque sea mínima. Con `--small-model` y un modelo más chico
+  bajaría más; no se midió.
+- El lote de tres triviales costó 518 k, contra 300–400 k que cuesta cada PR suelta.
+- Veredictos y hallazgos iguales a los de la revisión completa en las seis PRs (todas `COMMENT`, sin hallazgos).
+- **Escalado de más, corregido**: la primera versión de la regla ("toca datos persistidos, despliegue o un contrato")
+  hizo que Codex escalara dos de las seis PRs sin sospechar nada (un `tsconfig` de build, conversiones que
+  alimentan datos guardados), y cada escalado costó 760–860 k. La regla quedó en "cambia lo que hace el código"
+  en auth, montos, escrituras destructivas, migraciones o secretos, con build, CI y dependencias fuera, y "nunca
+  escalar solo por ser minucioso". Con eso, cero escalados en la segunda corrida.

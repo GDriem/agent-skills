@@ -94,6 +94,15 @@ Alcance: Claude Code y Codex. Copilot, Gemini y Cursor quedan como pendiente (ab
 - [x] README final (qué está probado y qué solo documentado).
 - [x] `v0.1.0`: tag anotado y release de `gh` (2026-11-03).
 
+### Fase 6: que las PRs chicas no paguen como las grandes (2026-11-03)
+
+- [x] `pr-review --light` con escalado (`escalate`, nunca publica al escalar), clases `trivial`/`small`/`normal`
+      por rutas y conteos, tier budget, lotes de triviales, `--small-model`/`--no-tiering`, en `pr-review-all` y
+      `bin/pr-batch` (ADR-0001 §4 ter).
+- [x] Run dir único por lote (dos lotes en el mismo minuto se pisaban el `summary.json`).
+- [ ] Orquestador en un modelo más barato: en Claude Code ahora es el 94 % del lote.
+- [ ] `pr-ready-all` con clases: falta un modo ligero de `pr-ready`.
+
 ### Pendiente: Copilot, Gemini y Cursor (sin fecha)
 
 - [ ] Hoy están documentados pero sin probar, y `bin/pr-batch` y `bin/agent-batch` responden "no implementado
@@ -168,3 +177,8 @@ Alcance: Claude Code y Codex. Copilot, Gemini y Cursor quedan como pendiente (ab
   costo fijo que con tareas mínimas supera al de las tareas. Probado: el shell de Codex es un zsh de login que
   vuelve a poner los directorios reales delante del `PATH`, así que un stub en el `PATH` no alcanza (`ZDOTDIR`
   sí). README final con estado por harness.
+- **2026-11-03 (Fase 6):** tier por tamaño en `pr-review-all` y `bin/pr-batch`. Probado con `gh`/`claude`/`codex`
+  falsos (clases, lote de triviales, ruta sensible a `normal`, cerrada → `SKIPPED`, escalado una sola vez,
+  `--no-tiering`, `pr-ready` sin clases, dos lotes simultáneos) y real en `--dry-run` sobre seis PRs: Claude Code
+  1,71 → 0,65 USD con 2 PRs chicas; Codex −44 % de input. La primera regla de escalado era demasiado amplia
+  (Codex escaló 2 de 6 PRs sin sospechar nada); acotada, cero escalados y mismos veredictos.

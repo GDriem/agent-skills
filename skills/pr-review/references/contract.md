@@ -29,7 +29,7 @@ JSON line:
 Content, in the review language:
 
 1. Header: skill, `<owner>/<repo>#<n>`, PR title, head SHA, base branch, date, flags used (`--dry-run`,
-   `--auto`, `--lang`, `--focus`).
+   `--auto`, `--light`, `--lang`, `--focus`). An escalated light run says so here, with the reason.
 2. The findings table exactly as previewed (and, for `pr-ready`, the thread audit table).
 3. The review body and every inline comment that was posted, or that would have been posted under
    `--dry-run`, each with its `path:line`.
@@ -63,6 +63,12 @@ code fence around it, no trailing blank line. Everything a person should read go
 | `report` | absolute path of the report file |
 | `summary` | at most 60 words, in the review language, plain text |
 | `error` | the reason when `verdict` is `ERROR` or `SKIPPED`, otherwise `null` |
+| `light` | optional, `pr-review` only: `true` when the run used `--light`. Absent means `false` |
+| `escalate` | optional, `pr-review --light` only: `true` when the light run stopped and asks for a full review (see "Light mode" in `pr-review`). Absent means `false`. An escalating run never posts: `posted` is `false` |
+| `escalate_reason` | optional: one short sentence when `escalate` is `true`, otherwise `null` or absent |
+
+The three optional fields are additive: a line without them is still valid, and a batch treats it as a full,
+non-escalating run.
 
 `verdict` values stay in English whatever the review language: they are for machines. The report, comments and
 `summary` are in the review language.

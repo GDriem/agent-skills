@@ -1,6 +1,6 @@
 ---
 name: pr-review-all
-description: Run pr-review on every open, non-draft pull request of a GitHub repository, or on a list of PR numbers, with one fresh agent per PR so no PR shares context with another. Collects each agent's result line into a batch summary. Never approves. Supports --dry-run, --parallel, --model, --lang, --focus and --repo. Use when asked to review all open PRs or a batch of PRs.
+description: Run pr-review on every open, non-draft pull request of a GitHub repository, or on a list of PR numbers, with one fresh agent per PR so no PR shares context with another. Small PRs run on a cheaper tier in light mode and escalate to a full review when they find something serious. Collects each agent's result line into a batch summary. Never approves. Supports --dry-run, --parallel, --model, --small-model, --no-tiering, --lang, --focus and --repo. Use when asked to review all open PRs or a batch of PRs.
 ---
 
 # pr-review-all
@@ -19,7 +19,9 @@ after the skill name instead.
 | `401,405,410` | only these PR numbers (also how you retry the ones that failed) |
 | `--repo owner/repo` | target another repository instead of the current directory's |
 | `--parallel N` | at most N PR agents at a time; default 3; `1` runs them one after another |
-| `--model M` | model for the PR agents (the orchestrator keeps the session's model) |
+| `--model M` | model for the `normal` PR agents (the orchestrator keeps the session's model) |
+| `--small-model M` | model for the budget tier (`trivial` and `small` PRs); default: the harness's small tier |
+| `--no-tiering` | every PR runs as `normal`: one full review per agent, no light mode, no grouping |
 | `--dry-run` | every PR agent runs `pr-review --dry-run`: nothing is written to GitHub, nothing is asked |
 | `--lang=en\|es\|…` | forwarded to every PR agent |
 | `--focus="<criteria>"` | forwarded to every PR agent |
@@ -35,6 +37,8 @@ it runs.
 - Every PR agent runs with `--auto`: there is nobody to answer it. Without `--dry-run` that means it posts, so
   the batch asks once for the whole scope before launching (see `references/batch.md`).
 - One PR failing never stops the batch.
+- Size picks the tier, never the bar: a light run that finds something serious escalates and the PR gets a
+  full review (Step 2b and Step 7 of `references/batch.md`).
 
 ## What to do
 

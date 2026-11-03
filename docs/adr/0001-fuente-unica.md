@@ -3,7 +3,8 @@
 - **Estado:** aceptada. Enmienda de la Sesión 2: el reporte se llama `<skill>-<n>.md` (con `pr-<n>.md`,
   `pr-review` y `pr-ready` sobre la misma PR en el mismo minuto se pisaban; pasó en el smoke), y se agrega
   `--run-dir=<ruta>` para que un lote fije el directorio. Enmienda de la Sesión 5: contrato por tarea para
-  `orchestrate` y `bin/agent-batch` (§4 bis).
+  `orchestrate` y `bin/agent-batch` (§4 bis). Enmienda del 2026-11-03: tier por tamaño, modo ligero y escalado
+  en `pr-review-all` (§4 ter).
 - **Fecha:** 2026-11-02
 - **Contexto previo:** [inventario](../inventory.md), [matriz de harnesses](../harness-matrix.md)
 
@@ -118,6 +119,27 @@ nativos. El detalle está en `skills/orchestrate/references/contract.md`.
 - **Tiers en vez de modelos**: `small|default|large` + `effort`; cada adapter dice qué significan.
 - `bin/agent-batch` comparte con `bin/pr-batch` el arranque de sesiones headless (`bin/lib/batch.sh`), así que
   agregar un harness al runner lo agrega a los dos.
+
+### 4 ter. Tier por tamaño y escalado (`pr-review-all`, 2026-11-03)
+
+Medido en la Sesión 6: con PRs chicas, un agente por PR gastaba más del doble que revisarlas en serie, y casi
+todo era de los hijos (cada llamada relee la skill, sus referencias y las convenciones). El aislamiento se
+mantiene, pero el costo pasa a depender del tamaño:
+
+- **Clases**, calculadas por el orquestador con rutas y conteos de `gh` (nunca el diff): `trivial` (≤ 20 líneas,
+  ≤ 3 archivos), `small` (≤ 100, ≤ 8) y `normal`. Una ruta que suena sensible (auth, permisos, secretos,
+  migraciones, pagos, CI, despliegue) la deja en `normal`, sea del tamaño que sea.
+- `small` y `trivial` corren con el tier budget del adapter y `pr-review --light`. Las `trivial` van de a cinco por
+  agente, en serie; las `normal` siguen como antes. `--no-tiering` vuelve a lo de antes.
+- **Escalado**: una corrida ligera que ve un candidato P0/P1, un cambio de comportamiento en auth, montos,
+  escrituras destructivas, migraciones o secretos, o un defecto sospechado que no puede verificar dentro del
+  límite termina con `escalate: true` y **no publica**, aunque tenga `--auto`. Escalar "por las dudas" no vale: la
+  primera regla, más amplia, hizo escalar a Codex 2 de 6 PRs sin sospechar nada. El orquestador relanza esa PR
+  una sola vez como `normal`. Así el tamaño elige el modelo, pero no baja el criterio, y nunca hay dos reviews.
+- **Contrato**: campos opcionales `light`, `escalate` y `escalate_reason` en la línea de `pr-review`; el
+  `summary.json` del lote agrega `tier` y `escalated` a cada línea. Una línea sin los campos nuevos sigue siendo
+  válida.
+- `pr-ready-all` no cambia: `pr-ready` no tiene modo ligero.
 
 ### 5. Reglas que no cambian por harness
 

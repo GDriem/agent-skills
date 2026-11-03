@@ -16,8 +16,9 @@ value stops the run before anything is written: say which one.
    tasks write elsewhere). `git status --porcelain` tells whether the tree is dirty.
 2. Run directory: `--run-dir` if given; otherwise `printenv AGENT_SKILLS_RUNS` (empty or exit code 1 means unset,
    then `printenv HOME` and use `<home>/.agent-skills/runs`), `date +%Y-%m-%dT%H-%M`, and
-   `<runs>/<timestamp>-orchestrate`. `mkdir -p` it and use its absolute path everywhere. Never put it inside
-   `<root>`.
+   `<runs>/<timestamp>-orchestrate`. `mkdir -p <runs>`, then `mkdir` the run directory without `-p`; if it
+   already exists, another run started in the same minute: add `-2`, `-3`, … until one `mkdir` succeeds. A given
+   `--run-dir` (for `--only`) is used as is. Use its absolute path everywhere. Never put it inside `<root>`.
 3. `realpath <this-dir>/../..` → `<source-root>`, where `<this-dir>` is the directory this skill was loaded from
    (the harness gives it). Used only for `bin/agent-batch` and `adapters/`.
 

@@ -84,18 +84,34 @@ pr-review owner/repo#401         # otro repo
 pr-review                        # la PR de la rama actual
 pr-review 401 --auto             # publica sin pedir confirmación
 pr-review 401 --dry-run          # hace todo menos escribir en GitHub
+pr-review 401 --light            # pasada barata para una PR chica; si ve algo serio, pide una completa
 
 pr-ready 401
 
 pr-review-all                    # todas las abiertas que no son draft
 pr-review-all 401,405,410        # solo esas (útil para reintentar fallidas)
 pr-review-all --repo owner/repo 12,15
-pr-review-all --dry-run --parallel 2 --model <modelo>   # 2 agentes a la vez, modelo propio para cada PR
+pr-review-all --dry-run --parallel 2 --model <modelo>   # 2 agentes a la vez, modelo propio para las PRs normales
+pr-review-all --small-model <modelo>                    # modelo del tier budget (PRs chicas y triviales)
+pr-review-all --no-tiering       # todas como normales: una revisión completa por agente, sin agrupar
 pr-ready-all                     # pr-ready en lote; los LISTA traen su comentario de aprobación en summary.md
 ```
 
 Sin `--dry-run`, una `-all` pide confirmación una sola vez para todo el lote (cada agente corre con `--auto`
 y publica). `--parallel 1` corre las PRs una detrás de otra.
+
+**Tier por tamaño (`pr-review-all` y `bin/pr-batch --skill pr-review`).** Con las rutas y los conteos de cada PR,
+sin leer el diff, el lote las separa en tres clases:
+
+| Clase | Cuándo | Cómo corre |
+|---|---|---|
+| trivial | ≤ 20 líneas y ≤ 3 archivos | de a cinco por agente, en serie, tier budget, `--light` |
+| small | ≤ 100 líneas y ≤ 8 archivos | un agente por PR, tier budget, `--light` |
+| normal | el resto, o cualquier ruta que suene sensible (auth, permisos, secretos, migraciones, pagos, CI, despliegue) | como siempre |
+
+Tier budget: `haiku` en Claude Code y esfuerzo de razonamiento bajo en Codex (o `--small-model`). Si la pasada
+ligera ve un posible bloqueante, algo sensible o algo que no puede verificar, no publica nada y el lote revisa esa
+PR de nuevo, completa. `summary.md` muestra la clase de cada PR y por qué escaló. `pr-ready-all` no usa clases.
 
 ### `bin/pr-batch`
 
@@ -171,9 +187,10 @@ lanza cada agente depende del harness:
 | Gemini CLI y Copilot en VS Code | el runner universal, hasta confirmar que sus subagentes corren en paralelo | documentado, pendiente |
 | Claude Code y Codex | `bin/pr-batch --harness claude\|codex`, que lanza una sesión headless por PR (`claude -p`, `codex exec`) | probado |
 
-**Costo.** Un agente por PR no es lo más barato: cada uno arranca de cero, y con dos PRs chicas el lote gasta
-más del doble de tokens que revisarlas una tras otra en una sola sesión. Lo que se gana es que el contexto del
-agente principal no crece con cada PR, que las PRs corren en paralelo y que una PR no contamina a la otra. Lo mismo
+**Costo.** Un agente por PR arranca de cero, así que sin más trabajo las PRs chicas pagan como las grandes. El tier
+por tamaño lo corrige: con dos PRs chicas, el lote bajó de 1,71 a 0,65 USD en Claude Code y un 44 % de tokens en
+Codex, sin cambiar los veredictos. Lo que se mantiene es que el contexto del agente principal no crece con cada
+PR, que las PRs corren en paralelo y que una PR no contamina a la otra. Lo mismo
 vale para `orchestrate`: su orquestador tiene un costo fijo que solo compensa con tareas grandes o que
 conviene aislar. Números en [docs/token-cost.md](docs/token-cost.md).
 

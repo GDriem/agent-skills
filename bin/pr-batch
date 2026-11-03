@@ -13,6 +13,14 @@ while [ -L "$src" ]; do
   case "$link" in /*) src=$link ;; *) src=$(dirname "$src")/$link ;; esac
 done
 . "$(cd "$(dirname "$src")" && pwd -P)/lib/batch.sh"
+SRC_ROOT=$(cd "$(dirname "$src")/.." && pwd -P)
+
+# Size classes for pr-review (skills/pr-review-all/references/batch.md, Step 2b). Paths and counts only.
+SIZE_JQ='{number, lines: (.additions + .deletions), files: .changedFiles,
+  sensitive: ([.files[].path | ascii_downcase | select(test("auth|login|session|token|permission|role|acl|security|crypto|secret|credential|password|migration|schema|payment|invoice|\\.github/workflows/|dockerfile|helm|terraform|k8s|deploy"))] | length > 0)}
+  | if .sensitive then "normal" elif .lines <= 20 and .files <= 3 then "trivial"
+    elif .lines <= 100 and .files <= 8 then "small" else "normal" end'
+GROUP_MAX=5
 
 usage() {
   cat <<EOF
@@ -24,7 +32,10 @@ Usage: $PROG --harness claude|codex [options] <prs|all>
   --skill S              pr-review (default) or pr-ready
   --repo owner/repo      default: the repository of the current directory
   --parallel N           sessions at a time, default 3; 1 runs them one after another
-  --model M              model for every PR session
+  --model M              model for the normal PR sessions
+  --small-model M        model for the budget tier (trivial and small PRs, pr-review only); default:
+                         haiku for claude, the configured model at low reasoning effort for codex
+  --no-tiering           every PR runs as normal: full review, one session per PR, no grouping
   --dry-run              forwarded to every PR: nothing is written to GitHub
   --yes                  do not ask before a batch that posts (required when stdin is not a terminal)
   --lang L               forwarded as --lang=L
@@ -47,49 +58,73 @@ synth_line() { # <pr> <verdict> <error> <summary>
 }
 
 # ---------------------------------------------------------------------------------------------------
-# Internal mode: one PR. Called by xargs with the configuration in PRB_* variables.
-run_one() {
-  local n=$1 out="$PRB_WORK/line-$1.json" state line raw log
+# Internal mode: one unit, "<class>:<n>[,<n>…]". Called by xargs with the configuration in PRB_* variables.
+# normal and small are one PR; trivial is a group of PRs reviewed in series by one budget session.
+run_unit() {
+  local unit=$1 class=${1%%:*} list=${1#*:} n state open=() line raw log prompt args i
+  for n in ${list//,/ }; do
+    local out="$PRB_WORK/line-$n.json"
+    [ -f "$PRB_WORK/tier-$n" ] || echo "$class" > "$PRB_WORK/tier-$n"   # an escalation keeps the first class
+    if ! state=$(gh pr view "$n" --repo "$PRB_REPO" --json state,isDraft 2>"$PRB_WORK/pr-$n.view.err"); then
+      synth_line "$n" ERROR "$(last_line < "$PRB_WORK/pr-$n.view.err")" "PR could not be read." > "$out"
+      continue
+    fi
+    case "$(jq -r 'if .state != "OPEN" then (.state | ascii_downcase) elif .isDraft then "draft" else "ok" end' <<<"$state")" in
+      ok) open+=("$n") ;;
+      closed) synth_line "$n" SKIPPED closed "Skipped: the PR is closed." > "$out" ;;
+      merged) synth_line "$n" SKIPPED merged "Skipped: the PR is merged." > "$out" ;;
+      *) synth_line "$n" SKIPPED draft "Skipped: the PR is a draft." > "$out" ;;
+    esac
+  done
+  [ ${#open[@]} -gt 0 ] || return 0
 
-  if ! state=$(gh pr view "$n" --repo "$PRB_REPO" --json state,isDraft 2>"$PRB_WORK/pr-$n.view.err"); then
-    synth_line "$n" ERROR "$(last_line < "$PRB_WORK/pr-$n.view.err")" "PR could not be read." > "$out"
-    return 0
+  local model=$PRB_MODEL effort="" extra=""
+  if [ "$class" != normal ]; then
+    extra=" --light"
+    model=$PRB_SMALL_MODEL
+    if [ "$PRB_HARNESS" = claude ]; then model=${model:-haiku}; else effort=low; fi
   fi
-  case "$(jq -r 'if .state != "OPEN" then (.state | ascii_downcase) elif .isDraft then "draft" else "ok" end' <<<"$state")" in
-    ok) ;;
-    closed) synth_line "$n" SKIPPED closed "Skipped: the PR is closed." > "$out"; return 0 ;;
-    merged) synth_line "$n" SKIPPED merged "Skipped: the PR is merged." > "$out"; return 0 ;;
-    *) synth_line "$n" SKIPPED draft "Skipped: the PR is a draft." > "$out"; return 0 ;;
-  esac
+  local tail="--auto --run-dir=$PRB_RUN_DIR$extra"
+  [ "$PRB_DRY" = 1 ] && tail="$tail --dry-run"
+  [ -n "$PRB_LANG" ] && tail="$tail --lang=$PRB_LANG"
+  [ -n "$PRB_FOCUS" ] && tail="$tail --focus=\"${PRB_FOCUS//\"/\'}\""
 
-  local args="$PRB_REPO#$n --auto --run-dir=$PRB_RUN_DIR"
-  [ "$PRB_DRY" = 1 ] && args="$args --dry-run"
-  [ -n "$PRB_LANG" ] && args="$args --lang=$PRB_LANG"
-  [ -n "$PRB_FOCUS" ] && args="$args --focus=\"${PRB_FOCUS//\"/\'}\""
-
-  raw="$PRB_WORK/pr-$n.$PRB_HARNESS.out"; log="$PRB_WORK/pr-$n.$PRB_HARNESS.log"
-  local prompt="/$PRB_SKILL $args"
-  [ "$PRB_HARNESS" = codex ] && prompt="\$$PRB_SKILL $args"
-  line=$(BATCH_MODEL=$PRB_MODEL BATCH_ADD_DIRS="$PRB_RUN_DIR:$PRB_TMP" \
+  local key=${open[0]}
+  raw="$PRB_WORK/unit-$key.$PRB_HARNESS.out"; log="$PRB_WORK/unit-$key.$PRB_HARNESS.log"
+  if [ ${#open[@]} -eq 1 ]; then
+    prompt="/$PRB_SKILL $PRB_REPO#$key $tail"
+    [ "$PRB_HARNESS" = codex ] && prompt="\$$PRB_SKILL $PRB_REPO#$key $tail"
+  else
+    prompt="Read the file $SRC_ROOT/skills/$PRB_SKILL/SKILL.md once and follow it for each of these invocations, one after another:"
+    for n in "${open[@]}"; do prompt="$prompt
+$PRB_SKILL $PRB_REPO#$n $tail"; done
+    prompt="$prompt
+Finish one PR before starting the next, and never carry a finding or an assumption from one PR to another.
+Nobody can answer questions in this session. Your final message must end with the result line of each PR, in the order above, one per line, with nothing after the last one."
+  fi
+  line=$(BATCH_MODEL=$model BATCH_EFFORT=$effort BATCH_LINES=${#open[@]} BATCH_ADD_DIRS="$PRB_RUN_DIR:$PRB_TMP" \
     BATCH_TOOLS='Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm *),Read,Write,Glob,Grep' \
     headless_run "$PRB_HARNESS" "$prompt" "$raw" "$log")
 
-  if line=$(jq -ce --argjson n "$n" 'select(type == "object" and .pr == $n)' <<<"$line" 2>/dev/null); then
-    printf '%s\n' "$line" > "$out"
-  else
-    synth_line "$n" ERROR "no result line (session log: $log)" "The session ended without a result line." > "$out"
-  fi
+  # Each PR takes the result line whose "pr" is its number, wherever it is among the trailing lines.
+  for n in "${open[@]}"; do
+    if l=$(printf '%s\n' "$line" | jq -cR --argjson n "$n" 'fromjson? | select(type == "object" and .pr == $n)' 2>/dev/null | last_line) && [ -n "$l" ]; then
+      printf '%s\n' "$l" > "$PRB_WORK/line-$n.json"
+    else
+      synth_line "$n" ERROR "no result line (session log: $log)" "The session ended without a result line." > "$PRB_WORK/line-$n.json"
+    fi
+  done
 }
 
 if [ "${1:-}" = "--one" ]; then
-  run_one "$2"
+  run_unit "$2"
   exit 0
 fi
 
 # ---------------------------------------------------------------------------------------------------
 # Arguments
 
-harness="" skill="" repo="" parallel=3 model="" dry=0 yes=0 lang="" focus="" run_dir="" retry=""
+harness="" skill="" repo="" parallel=3 model="" small_model="" tiering=1 dry=0 yes=0 lang="" focus="" run_dir="" retry=""
 tokens=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -103,6 +138,9 @@ while [ $# -gt 0 ]; do
     --parallel=*) parallel=${1#*=}; shift ;;
     --model) model=${2:-}; shift 2 ;;
     --model=*) model=${1#*=}; shift ;;
+    --small-model) small_model=${2:-}; shift 2 ;;
+    --small-model=*) small_model=${1#*=}; shift ;;
+    --no-tiering) tiering=0; shift ;;
     --lang) lang=${2:-}; shift 2 ;;
     --lang=*) lang=${1#*=}; shift ;;
     --focus) focus=${2:-}; shift 2 ;;
@@ -139,6 +177,7 @@ fi
 
 skill=${skill:-pr-review}
 case "$skill" in pr-review|pr-ready) ;; *) die "--skill must be pr-review or pr-ready" ;; esac
+[ "$skill" = pr-review ] || tiering=0
 
 if [ -z "$repo" ]; then
   repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) ||
@@ -172,8 +211,29 @@ fi
 [ -n "$run_dir" ] || run_dir=$(default_run_dir)
 run_dir=$(abs_dir "$run_dir")
 
+# Units: one per normal or small PR; trivial PRs in groups of up to GROUP_MAX (a lone one runs as small).
+units=() trivial=() classes=""
+for n in "${prs[@]}"; do
+  class=normal
+  if [ "$tiering" = 1 ]; then
+    class=$(gh pr view "$n" --repo "$repo" --json additions,deletions,changedFiles,files --jq "$SIZE_JQ" 2>/dev/null) ||
+      class=normal
+  fi
+  classes="$classes #$n:$class"
+  if [ "$class" = trivial ]; then trivial+=("$n"); else units+=("$class:$n"); fi
+done
+i=0
+while [ $i -lt ${#trivial[@]} ]; do
+  group=$(printf '%s\n' "${trivial[@]:$i:$GROUP_MAX}" | paste -sd, -)
+  case "$group" in *,*) units+=("trivial:$group") ;; *) units+=("small:$group") ;; esac
+  i=$((i + GROUP_MAX))
+done
+
 echo "$PROG: $skill on ${#prs[@]} PR(s) of $repo with $harness: ${prs[*]}"
 echo "  parallel $parallel, model ${model:-harness default}, run dir $run_dir$([ "$dry" = 1 ] && echo ', dry run')"
+if [ "$tiering" = 1 ]; then
+  echo "  tiers:$classes; budget model ${small_model:-$([ "$harness" = claude ] && echo haiku || echo 'default at low effort')}"
+fi
 
 if [ "$dry" = 0 ] && [ "$yes" = 0 ]; then
   if [ -t 0 ]; then
@@ -191,14 +251,32 @@ fi
 tmp_root=${TMPDIR:-/tmp}
 work=$(mktemp -d "${tmp_root%/}/pr-batch.XXXXXX")
 export PRB_HARNESS=$harness PRB_SKILL=$skill PRB_REPO=$repo PRB_RUN_DIR=$run_dir PRB_WORK=$work \
-  PRB_MODEL=$model PRB_DRY=$dry PRB_LANG=$lang PRB_FOCUS=$focus PRB_TMP=$tmp_root
+  PRB_MODEL=$model PRB_SMALL_MODEL=$small_model PRB_DRY=$dry PRB_LANG=$lang PRB_FOCUS=$focus PRB_TMP=$tmp_root
 
-printf '%s\n' "${prs[@]}" | xargs -P "$parallel" -I{} "$SELF" --one {} || true
+printf '%s\n' "${units[@]}" | xargs -P "$parallel" -I{} "$SELF" --one {} || true
+
+# Escalations: a light run that asked for a full review gets one, once (a full run cannot escalate).
+escalated=()
+for n in "${prs[@]}"; do
+  [ -s "$work/line-$n.json" ] && jq -e '.escalate == true' "$work/line-$n.json" >/dev/null 2>&1 || continue
+  cp "$work/line-$n.json" "$work/light-$n.json"
+  escalated+=("$n")
+done
+if [ ${#escalated[@]} -gt 0 ]; then
+  echo "  escalating to a full review: ${escalated[*]}"
+  printf 'normal:%s\n' "${escalated[@]}" | xargs -P "$parallel" -I{} "$SELF" --one {} || true
+fi
 
 new="$work/new.json"
 for n in "${prs[@]}"; do
+  tier=$(cat "$work/tier-$n" 2>/dev/null || echo normal)
+  esc=false
+  [ -f "$work/light-$n.json" ] && esc=true
   if [ -s "$work/line-$n.json" ]; then cat "$work/line-$n.json"
-  else synth_line "$n" ERROR "the PR session did not run" "No result."; fi
+  else synth_line "$n" ERROR "the PR session did not run" "No result."; fi |
+    jq -c --arg tier "$tier" --argjson esc "$esc" \
+      --arg reason "$(jq -r '.escalate_reason // empty' "$work/light-$n.json" 2>/dev/null)" \
+      '. + {tier: $tier, escalated: $esc} + (if $esc then {escalate_reason: $reason} else {} end)'
 done | jq -s '.' > "$new"
 
 summary_json="$run_dir/summary.json"
@@ -216,6 +294,8 @@ fi
 
 flags="--harness $harness --skill $skill --parallel $parallel"
 [ -n "$model" ] && flags="$flags --model $model"
+[ -n "$small_model" ] && flags="$flags --small-model $small_model"
+[ "$tiering" = 0 ] && [ "$skill" = pr-review ] && flags="$flags --no-tiering"
 [ "$dry" = 1 ] && flags="$flags --dry-run"
 [ -n "$lang" ] && flags="$flags --lang $lang"
 [ -n "$focus" ] && flags="$flags --focus \"$focus\""
@@ -224,14 +304,15 @@ table=$(jq -r --arg skill "$skill" '
   def cell: tostring | gsub("\\|"; "\\|") | gsub("\n"; " ");
   def opt: if . == null then "—" else . end;
   (if $skill == "pr-ready"
-     then "| PR | Verdict | Max priority | Blocking / Suggestion / Decision | Pending | Posted | Summary | Report |\n|---|---|---|---|---|---|---|---|"
-     else "| PR | Verdict | Max priority | Blocking / Suggestion / Decision | Posted | Summary | Report |\n|---|---|---|---|---|---|---|" end),
-  (.[] | "| #\(.pr) | \(.verdict) | \(.max_priority | opt) | \(.findings.blocking) / \(.findings.suggestion) / \(.findings.decision) |"
+     then "| PR | Tier | Verdict | Max priority | Blocking / Suggestion / Decision | Pending | Posted | Summary | Report |\n|---|---|---|---|---|---|---|---|---|"
+     else "| PR | Tier | Verdict | Max priority | Blocking / Suggestion / Decision | Posted | Summary | Report |\n|---|---|---|---|---|---|---|---|" end),
+  (.[] | "| #\(.pr) | \(.tier // "normal")\(if .escalated then " → normal" else "" end) | \(.verdict) | \(.max_priority | opt) | \(.findings.blocking) / \(.findings.suggestion) / \(.findings.decision) |"
      + (if $skill == "pr-ready" then " \(.pending | opt) |" else "" end)
      + " \(.posted) | \(.summary | opt | cell) | \(.report | opt) |")
 ' "$summary_json")
 
 problems=$(jq -r '.[] | select(.verdict == "ERROR" or .verdict == "SKIPPED") | "- #\(.pr) \(.verdict): \(.error)"' "$summary_json")
+escalations=$(jq -r '.[] | select(.escalated) | "- #\(.pr) (\(.tier) → normal): \(.escalate_reason)"' "$summary_json")
 failed=$(jq -r '[.[] | select(.verdict == "ERROR") | .pr] | map(tostring) | join(",")' "$summary_json")
 
 summary_md="$run_dir/summary.md"
@@ -243,6 +324,9 @@ summary_md="$run_dir/summary.md"
   echo "- Run directory: $run_dir"
   echo
   echo "$table"
+  if [ -n "$escalations" ]; then
+    echo; echo "## Escalated to a full review"; echo; echo "$escalations"
+  fi
   if [ -n "$problems" ]; then
     echo; echo "## Errors and skipped"; echo; echo "$problems"
   fi

@@ -44,24 +44,29 @@ what was tested in this repo is marked **probado**, the rest comes from the docs
   (**probado**). Invoking the skill by name stays as the fallback in the prompt, but was not needed.
 - **`Workflow`** (when the installation has it): one script, a pool of `--parallel` workers. There is no
   concurrency option per call (the tool caps a workflow at ~10 agents), so the pool limits it. Scripts cannot run
-  shell commands, so the per-PR re-check is left to the agent's Step 0. Pass the data through `args`:
+  shell commands, so the per-PR re-check is left to the agent's Step 0. Pass the units of Step 6 through `args`
+  (one per `normal` or `small` PR, one per group of `trivial` PRs), each with its prompt and its model:
 
   ```js
-  export const meta = { name: 'pr-batch', description: 'One fresh agent per PR', phases: [{ title: 'PRs' }] }
-  const { prs, prompts, parallel, model } = args      // prompts: { "<n>": "<prompt from batch.md>" }
-  const queue = [...prs], lines = {}
+  export const meta = { name: 'pr-batch', description: 'One fresh agent per PR or per group of trivial PRs', phases: [{ title: 'PRs' }] }
+  const { units, parallel } = args   // units: [{ prs: [<n>, …], prompt: "<prompt from batch.md>", model: "<m>" | null }]
+  const queue = [...units], lines = {}
   async function worker() {
     while (queue.length) {
-      const n = queue.shift()
-      const out = await agent(prompts[n], { label: `#${n}`, phase: 'PRs', ...(model ? { model } : {}) })
-      lines[n] = out ? String(out).trim().split('\n').pop() : null
+      const u = queue.shift()
+      const out = await agent(u.prompt, { label: u.prs.map(n => `#${n}`).join(' '), phase: 'PRs', ...(u.model ? { model: u.model } : {}) })
+      const tail = out ? String(out).trim().split('\n').filter(l => l.trim()).slice(-u.prs.length) : []
+      u.prs.forEach((n, i) => { lines[n] = tail[i] ?? null })
     }
   }
   await Promise.all(Array.from({ length: parallel }, worker))
-  return prs.map(n => ({ pr: n, line: lines[n] }))
+  return units.flatMap(u => u.prs).map(n => ({ pr: n, line: lines[n] }))
   ```
 
-  The orchestrator then checks all the lines at once (Step 7 of `batch.md`).
+  The orchestrator then checks all the lines at once (Step 7 of `batch.md`); escalations go in a second run of
+  the same script with one `normal` unit per escalated PR.
+- **Budget tier** (`trivial` and `small` PRs of `pr-review-all`): `model: 'haiku'`, or `--small-model` when given,
+  in `agent()`, in `Agent`, or as `claude --model` in `bin/pr-batch`. `normal` PRs take `--model` or nothing.
 - **`Agent`** (no `Workflow`): up to `--parallel` `Agent` calls in one message, each with the prompt from
   `batch.md`; only the subagent's final message comes back, so the orchestrator keeps just its last line. Re-check
   each PR with `gh pr view` before its wave.

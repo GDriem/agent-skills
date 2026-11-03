@@ -14,18 +14,44 @@ sibling's `references/` here; the PR agents do that.
   keep the order given. Anything else that is not a flag (a word, `0`, `-3`, `12a`) stops the batch before
   anything is launched: say which token is invalid.
 - `all` or no numbers: list the repository (Step 2).
-- `--repo owner/repo`, `--parallel N` (integer ≥ 1, default 3), `--model M`, `--dry-run`, `--lang=…`,
-  `--focus="…"`. Keep `--lang` and `--focus` verbatim to forward them.
+- `--repo owner/repo`, `--parallel N` (integer ≥ 1, default 3), `--model M`, `--small-model M`,
+  `--no-tiering`, `--dry-run`, `--lang=…`, `--focus="…"`. Keep `--lang` and `--focus` verbatim to forward them.
 
 ## Step 2 — Repository and PR list
 
 1. Repository: `--repo` if given, else `gh repo view --json nameWithOwner -q .nameWithOwner`. If that fails,
    stop: the batch must run inside a clone with a GitHub remote, or get `--repo`.
-2. With explicit numbers, use them as they are; their state is checked per PR in Step 6.
+2. With explicit numbers, use them as they are; their state is checked per PR in Step 6. When tiering is on
+   (Step 2b), get each one's size with
+   `gh pr view <n> --repo <owner>/<repo> --json number,title,additions,deletions,changedFiles,files --jq '<size>'`.
 3. Otherwise:
    `gh pr list --repo <owner>/<repo> --state open --limit 1000 --json number,title,isDraft --jq '[.[] | select(.isDraft | not) | {number,title}]'`.
-   `gh` pages through the API up to `--limit`. If it returns exactly 1000, say the list may be truncated.
+   `gh` pages through the API up to `--limit`. If it returns exactly 1000, say the list may be truncated. When
+   tiering is on, ask for `number,title,isDraft,additions,deletions,changedFiles,files` instead, with
+   `--jq '[.[] | select(.isDraft | not) | <size>]'`.
 4. No PRs: say so, write no run directory, and end with the batch line of Step 9 (`total` 0).
+
+`<size>` is this `jq` expression. It reads file paths and line counts only, never the diff:
+
+```jq
+{number, title, lines: (.additions + .deletions), files: .changedFiles,
+ sensitive: ([.files[].path | ascii_downcase | select(test("auth|login|session|token|permission|role|acl|security|crypto|secret|credential|password|migration|schema|payment|invoice|\\.github/workflows/|dockerfile|helm|terraform|k8s|deploy"))] | length > 0)}
+```
+
+## Step 2b — Size classes (only when `<sibling>` is `pr-review`)
+
+Tiering is on when `<sibling>` is `pr-review` and `--no-tiering` was not given. Otherwise every PR is `normal`
+and the rest of this step does not apply.
+
+| Class | When | How it runs |
+|---|---|---|
+| `trivial` | `lines ≤ 20`, `files ≤ 3`, not `sensitive` | grouped, up to 5 PRs per agent, budget tier, `--light` |
+| `small` | `lines ≤ 100`, `files ≤ 8`, not `sensitive` | one agent per PR, budget tier, `--light` |
+| `normal` | everything else | one agent per PR, as before: `--model` if given, no `--light` |
+
+A `trivial` PR left alone in its group runs as `small`. The **budget tier** is the `small` tier of the harness
+adapter (`adapters/<harness>.md`); `--small-model M` replaces its model. Size never lowers the bar: a light run
+that finds something serious escalates, and Step 7 reviews that PR again in full.
 
 ## Step 3 — Locate the sibling skill and this repository
 
@@ -43,13 +69,16 @@ If `<sibling-path>` does not exist, stop: `<sibling>` is not installed next to `
 
 Resolve it once, with the rule of the sibling's result contract: `printenv AGENT_SKILLS_RUNS` (empty or exit
 code 1 means unset, then `printenv HOME` and use `<home>/.agent-skills/runs`), `date +%Y-%m-%dT%H-%M`, and
-`mkdir -p <runs>/<timestamp>` → `<run-dir>` (absolute). Every PR agent gets `--run-dir=<run-dir>`, so all
-reports of the batch and the batch summary end up together. Write nothing else there.
+`mkdir -p <runs>`, then `mkdir <runs>/<timestamp>` (without `-p`) → `<run-dir>` (absolute). If that `mkdir`
+fails because the directory exists, another batch started in the same minute: try `<timestamp>-2`, `-3`, … until
+one succeeds, so two batches never share a summary. Every PR agent gets `--run-dir=<run-dir>`, so all reports of
+the batch and the batch summary end up together. Write nothing else there.
 
 ## Step 5 — Announce the scope
 
-Tell the user: repository, number of PRs (with their numbers), `--parallel`, the model for PR agents (or "same
-as this session"), `<sibling-path>`, `<run-dir>`, and whether it is a dry run.
+Tell the user: repository, number of PRs (with their numbers and, with tiering, their class), `--parallel`, the
+model for `normal` PR agents (or "same as this session") and for the budget tier, `<sibling-path>`,
+`<run-dir>`, and whether it is a dry run.
 
 - `--dry-run`: do not ask; continue.
 - Otherwise every PR agent will post (it runs with `--auto`). Ask once for the whole batch and wait. If the user
@@ -57,13 +86,15 @@ as this session"), `<sibling-path>`, `<run-dir>`, and whether it is a dry run.
   answer (headless, or the harness cannot ask), **do not launch**: stop and say that a batch that posts needs
   either a confirmation or `--dry-run`.
 
-## Step 6 — Run one agent per PR
+## Step 6 — Run one agent per PR (or per group of trivial PRs)
 
-For each PR, in order, keeping at most `--parallel` agents running:
+A **unit** is one PR (`normal`, `small`) or one group of up to 5 `trivial` PRs, in list order. For each unit, in
+order, keeping at most `--parallel` agents running:
 
 1. **Re-check right before launching**: `gh pr view <n> --repo <owner>/<repo> --json state,isDraft`. If it is
    not `OPEN`, or it is a draft, do not launch an agent: record a synthesized line (below) with `verdict`
-   `SKIPPED` and `error` `closed`, `merged` or `draft`. If the call fails (PR not found), record `ERROR` with
+   `SKIPPED` and `error` `closed`, `merged` or `draft`. In a group, re-check each PR and launch the group with
+   the ones still open. If the call fails (PR not found), record `ERROR` with
    the message. When the harness launches agents from a script that cannot run shell commands, skip this and
    let the agent's own Step 0 do it; it stops with `SKIPPED` the same way.
 2. **Launch a fresh agent** with its own context (not a fork of this conversation), the model from `--model` if
@@ -71,16 +102,30 @@ For each PR, in order, keeping at most `--parallel` agents running:
 
    ```text
    Read the file <sibling-path> and follow it exactly for this invocation:
-   <sibling> <owner>/<repo>#<n> --auto --run-dir=<run-dir> [--dry-run] [--lang=…] [--focus="…"]
+   <sibling> <owner>/<repo>#<n> --auto --run-dir=<run-dir> [--light] [--dry-run] [--lang=…] [--focus="…"]
    Nobody can answer questions in this session. If you cannot read that file, invoke the skill <sibling> by
    name with the same arguments instead. Your final message must end with the result line that skill defines.
    ```
 
+   `--light` and the budget tier for `small`; neither for `normal`. A group of `trivial` PRs gets one agent with
+   the budget tier and this prompt instead:
+
+   ```text
+   Read the file <sibling-path> once and follow it for each of these invocations, one after another:
+   <sibling> <owner>/<repo>#<n1> --auto --run-dir=<run-dir> --light [--dry-run] [--lang=…] [--focus="…"]
+   <sibling> <owner>/<repo>#<n2> …
+   Finish one PR before starting the next, and never carry a finding or an assumption from one PR to another.
+   Nobody can answer questions in this session. If you cannot read that file, invoke the skill <sibling> by
+   name with the same arguments instead. Your final message must end with the result line of each PR, in the
+   order above, one per line, with nothing after the last one.
+   ```
+
 3. **Wait for completion, not for progress.** Use the longest wait the harness offers and do not poll with
    short timeouts or sleep between checks: every check is one more turn of this orchestrator.
-4. **Keep only the last line** of the agent's final message, as text. Do not read the agent's earlier output
-   and do not repair the line; Step 7 checks all of them at once. If the agent returned nothing or died, record
-   a synthesized `ERROR` line with `error` `no result line` (or the failure you saw).
+4. **Keep only the last line** of the agent's final message, as text (for a group, the last N lines, N = the
+   PRs it got, matched to them in order). Do not read the agent's earlier output and do not repair the line;
+   Step 7 checks all of them at once. If the agent returned nothing or died, record a synthesized `ERROR` line
+   for each of its PRs with `error` `no result line` (or the failure you saw).
 
 **Synthesized line**: the sibling's contract with `skill` `<sibling>`, `repo`, `pr`, `head` `null`, the given
 `verdict`, `max_priority` `null`, `findings` all `0`, `pending` `null`, `posted` `false`, `review_url` `null`,
@@ -88,7 +133,7 @@ For each PR, in order, keeping at most `--parallel` agents running:
 
 A failed PR never stops the batch, and nothing is retried automatically: the summary gives the retry command.
 
-## Step 7 — Batch summary files
+## Step 7 — Escalations and batch summary files
 
 When every PR has a line:
 
@@ -96,12 +141,21 @@ When every PR has a line:
    (not in `<run-dir>`), then `jq -cR 'fromjson? // null' <file>`. Each output line is the parsed object, or
    `null` where a line did not parse. A `null`, a non-object, or an object whose `pr` is not that PR's number
    becomes a synthesized `ERROR` line with `error` `invalid result line`. Delete the temporary file.
-2. `<run-dir>/summary.json`: a JSON array of the checked lines, in PR order. Write it with the write-file
+2. **Escalations.** Every checked line with `escalate` `true` gets a second, full review: one fresh agent per
+   PR, as `normal` (the first prompt of Step 6, no `--light`, `--model` if given), at most `--parallel` at a
+   time. Its line replaces the light one; check the new lines the same way. A full run cannot escalate, so this
+   happens at most once per PR. Under `--dry-run` nothing was posted; without it the light run did not post
+   either (`pr-review` forbids it when escalating), so the full run is the only review.
+3. Add two fields to every line before writing it: `tier` (the class the PR started in: `trivial`, `small` or
+   `normal`; `normal` when tiering was off) and `escalated` (`true` if step 2 ran it again).
+4. `<run-dir>/summary.json`: a JSON array of those lines, in PR order. Write it with the write-file
    capability, then check it with `jq -e 'type == "array" and length == <count>' <run-dir>/summary.json`.
 3. `<run-dir>/summary.md`, in the review language of the lines' `summary` (English if they disagree):
    - header: `<batch-skill>`, repository, date, flags, run directory;
-   - one table, PR order: `PR | Verdict | Max priority | Blocking / Suggestion / Decision | Pending | Posted |
-     Summary | Report`. `Pending` only for `pr-ready`; a `null` report shows as `—`;
+   - one table, PR order: `PR | Tier | Verdict | Max priority | Blocking / Suggestion / Decision | Pending |
+     Posted | Summary | Report`. `Tier` shows `small → normal` when the PR escalated; `Pending` only for
+     `pr-ready`; a `null` report shows as `—`;
+   - escalated PRs listed again below the table with the light run's `escalate_reason`;
    - `ERROR` and `SKIPPED` PRs listed again below the table with their `error`;
    - if any PR has `ERROR`, the retry invocation: `<batch-skill> <failed numbers, comma-separated>` with the same
      flags, plus `--repo` if one was used;
@@ -138,5 +192,5 @@ for the harness has the details (`adapters/<harness>.md` under `<source-root>`):
 |---|---|
 | A workflow/scripting tool that spawns agents (Claude Code's `Workflow`) | one script, a pool of `--parallel` workers, one agent per PR; the prompt above as each agent's prompt |
 | A tool that spawns one subagent per call (Claude Code's `Agent`) | up to `--parallel` calls per turn, then the next wave as they finish |
-| Codex `multi_agent` | `spawn_agent` with `fork_turns: "none"` (otherwise the child inherits this whole conversation) and `model` if given; `wait_agent`; keep at most `--parallel` alive. Not under `codex exec --ephemeral` |
-| No subagents, or they cannot be launched from a skill | run `<source-root>/bin/pr-batch --harness <harness> --skill <sibling> --repo <owner>/<repo> --run-dir <run-dir> --parallel N [--model M] [--dry-run \| --yes] [--lang L] [--focus F] <numbers>` (`--yes` because Step 5 already confirmed); it does Steps 6–7 with one headless session per PR. Then do Steps 8–9 from its `summary.json` |
+| Codex `multi_agent` | `spawn_agent` with `fork_turns: "none"` (otherwise the child inherits this whole conversation), `model` if given, and the budget tier as `reasoning_effort`; `wait_agent`; keep at most `--parallel` alive. Not under `codex exec --ephemeral` |
+| No subagents, or they cannot be launched from a skill | run `<source-root>/bin/pr-batch --harness <harness> --skill <sibling> --repo <owner>/<repo> --run-dir <run-dir> --parallel N [--model M] [--small-model M] [--no-tiering] [--dry-run \| --yes] [--lang L] [--focus F] <numbers>` (`--yes` because Step 5 already confirmed); it does Steps 6–7, tiering and escalations included, with one headless session per unit. Then do Steps 8–9 from its `summary.json` |
