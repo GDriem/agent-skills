@@ -74,7 +74,205 @@ what was tested in this repo is marked **probado**, the rest comes from the docs
   `message.id` (each content block repeats the message). `modelUsage`/`total_cost_usd` in the final event cover
   parent and children together.
 
-## Headless (for `bin/pr-batch`)
+## `orchestrate`
+
+- **Tiers.** `small` → `model: 'haiku'`, `default` → no model (the session's), `large` → `model: 'opus'`.
+  `effort` (`low`/`medium`/`high`) goes as is to `agent()`, to `Agent`, or to `claude --effort`. `--model`
+  of `bin/agent-batch` overrides the tier.
+- **`Workflow`** (when the installation has it): pass the graph through `args` as a real JSON object, not a string,
+  and the script below **as is**. It does Steps 5–7 of `run.md`: reads in a pool of `parallel`, writes one at a
+  time, a separate small agent per commit (a script cannot run shell commands), and one agent for the checks.
+  The schema replaces the final JSON line: the agent returns the object. Invoking the skill is the opt-in that
+  `Workflow` requires.
+
+  ```json
+  { "tasks": [ ...graph.json tasks... ], "runDir": "<run-dir>", "root": "<root>", "readOnly": false,
+    "commit": false, "parallel": 3, "verify": [ { "label": "build", "cmd": "<the repo's build command>" } ] }
+  ```
+
+  ```js
+  export const meta = {
+    name: 'orchestrate',
+    description: 'Run a task graph: one fresh agent per task, reads in parallel, writes in series, then checks',
+    phases: [{ title: 'Tasks' }, { title: 'Checks' }],
+  }
+
+  const TASKS = args?.tasks ?? []
+  const RUN_DIR = args?.runDir ?? '.'
+  const ROOT = args?.root ?? '.'
+  const READ_ONLY = args?.readOnly === true
+  const COMMIT = args?.commit === true && !READ_ONLY
+  const PARALLEL = Math.max(1, args?.parallel ?? 3)
+  const VERIFY = args?.verify ?? []
+  const TIER_MODEL = { small: 'haiku', large: 'opus' }
+
+  const LINE_SCHEMA = {
+    type: 'object',
+    properties: {
+      status: { type: 'string', enum: ['ok', 'failed'] },
+      summary: { type: 'string', description: 'what was done, 60 words max' },
+      files_changed: { type: 'array', items: { type: 'string' }, description: 'repo-relative paths, 15 max' },
+      artifacts: { type: 'array', items: { type: 'string' }, description: 'absolute paths under the run dir' },
+      follow_ups: { type: 'array', items: { type: 'string' } },
+      error: { type: ['string', 'null'] },
+    },
+    required: ['status', 'summary'],
+  }
+  const COMMIT_SCHEMA = {
+    type: 'object',
+    properties: { committed: { type: 'boolean' }, sha: { type: ['string', 'null'] }, error: { type: ['string', 'null'] } },
+    required: ['committed'],
+  }
+
+  const ids = new Set(TASKS.map(t => t.id))
+  const depsOf = t => (t.deps ?? []).filter(d => ids.has(d))
+  const kindOf = t => (READ_ONLY ? 'read' : t.kind ?? 'write')
+  const lines = new Map()
+  const line = (t, status, error, summary, extra = {}) => ({
+    skill: 'orchestrate', task: t.id, kind: kindOf(t), status, summary: summary ?? '',
+    files_changed: [], artifacts: [], follow_ups: [], error: error ?? null, ...extra,
+  })
+
+  // The task prompt of skills/orchestrate/references/contract.md.
+  const promptOf = t => {
+    const fence = (t.files ?? []).length ? t.files.join(', ') : 'the scope described above'
+    const ctx = depsOf(t).map(d => {
+      const r = lines.get(d)
+      const arts = (r.artifacts ?? []).length ? ` · artifacts: ${r.artifacts.join(', ')}` : ''
+      return `- [${d}] ${r.summary}${arts}`
+    })
+    const mode = kindOf(t) === 'read'
+      ? `READ-ONLY: you must not create, edit or delete any file in the repository. Report only. Writing your report under ${RUN_DIR} is allowed.`
+      : `You may edit files, but ONLY within: ${fence}. Do not touch anything else. Do not commit and do not push.`
+    return [
+      t.prompt, '', '--- Execution rules ---',
+      'You have no access to any earlier conversation, and no other agent is working on your files.',
+      mode, `Scope: ${fence}`, `Done when: ${t.done ?? 'the task above is complete and self-consistent.'}`,
+      ...(ctx.length ? ['Conclusions of the tasks you depend on (read their artifact files yourself if you need detail):', ...ctx] : []),
+      `If you produce anything longer than a short summary (a report, a plan, an inventory), write it to ${RUN_DIR}/orchestrate-${t.id}.md and list that path in artifacts.`,
+      'Nobody can answer questions in this session. If you cannot finish, set status to "failed" and say why in error instead of guessing or half-doing it.',
+      'Return: summary at most 60 words, files_changed at most 15 repository-relative paths. Never put file contents, diffs or command output in any field.',
+    ].join('\n')
+  }
+
+  const runTask = async t => {
+    if (budget.total && budget.remaining() < 30_000) return line(t, 'skipped', 'turn budget exhausted', 'Not run.')
+    const opts = { label: `${t.id} · ${t.title}`, phase: 'Tasks', schema: LINE_SCHEMA }
+    if (TIER_MODEL[t.tier]) opts.model = TIER_MODEL[t.tier]
+    if (t.effort) opts.effort = t.effort
+    try {
+      const r = await agent(promptOf(t), opts)
+      if (!r) return line(t, 'failed', 'no result line', 'The agent returned nothing.')
+      const status = r.status === 'ok' ? 'ok' : 'failed'
+      return line(t, status, status === 'ok' ? null : r.error ?? 'the agent gave no reason', r.summary, {
+        files_changed: (r.files_changed ?? []).slice(0, 15), artifacts: r.artifacts ?? [], follow_ups: r.follow_ups ?? [],
+      })
+    } catch (e) {
+      return line(t, 'failed', String(e), 'The agent failed.')
+    }
+  }
+
+  // A separate small agent, not the one that wrote the code: it stages the fence, not its own file list.
+  const commitTask = async t => {
+    if (!t.commit) return { committed: false, sha: null, error: 'the task has no commit message' }
+    if (!(t.files ?? []).length) return { committed: false, sha: null, error: 'the task has no files to stage' }
+    const fence = t.files.map(f => `'${f}'`).join(' ')
+    try {
+      const c = await agent(
+        `Stage exactly this task's paths and make ONE commit, one command per step:\n` +
+          `1. git -C ${ROOT} add -A -- ${fence}\n` +
+          `2. git -C ${ROOT} diff --cached --quiet (exit code 0 means nothing is staged: stop, committed false, error "nothing to commit")\n` +
+          `3. git -C ${ROOT} commit -m ${JSON.stringify(t.commit)}\n` +
+          `4. git -C ${ROOT} rev-parse --short HEAD -> sha\n` +
+          `Do not push, amend, rebase, reset or check out. Do not edit any file. Stage nothing outside those paths.`,
+        { label: `commit · ${t.id}`, phase: 'Tasks', model: 'haiku', effort: 'low', schema: COMMIT_SCHEMA }
+      )
+      return c ?? { committed: false, sha: null, error: 'the commit agent returned nothing' }
+    } catch (e) {
+      return { committed: false, sha: null, error: String(e) }
+    }
+  }
+
+  const pool = async (items, fn) => {
+    const queue = [...items]
+    const worker = async () => { while (queue.length) await fn(queue.shift()) }
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, items.length) }, worker))
+  }
+
+  phase('Tasks')
+  const remaining = new Map(TASKS.map(t => [t.id, t]))
+  while (remaining.size) {
+    const ready = [...remaining.values()].filter(t => depsOf(t).every(d => lines.has(d)))
+    if (!ready.length) {
+      for (const t of remaining.values()) lines.set(t.id, line(t, 'blocked', 'dependency cycle', 'Not run.'))
+      break
+    }
+    for (const t of ready) remaining.delete(t.id)
+    const runnable = []
+    for (const t of ready) {
+      const bad = depsOf(t).filter(d => lines.get(d).status !== 'ok')
+      if (bad.length) lines.set(t.id, line(t, 'blocked', `dependency not ok: ${bad.join(', ')}`, 'Not run.'))
+      else runnable.push(t)
+    }
+    await pool(runnable.filter(t => kindOf(t) === 'read'), async t => {
+      lines.set(t.id, await runTask(t))
+      log(`[${t.id}] ${lines.get(t.id).status}`)
+    })
+    for (const t of runnable.filter(t => kindOf(t) === 'write')) {
+      const r = await runTask(t)
+      if (COMMIT && r.status === 'ok') r.commit = await commitTask(t)
+      lines.set(t.id, r)
+      log(`[${t.id}] ${r.status}${r.commit ? ` · commit ${r.commit.sha ?? `no (${r.commit.error})`}` : ''}`)
+    }
+  }
+
+  let verify = null
+  const touched = [...lines.values()].some(r => r.status === 'ok' && r.files_changed.length)
+  if (VERIFY.length && touched) {
+    phase('Checks')
+    verify = await agent(
+      `From ${ROOT}, run each command in order, one per call, and report each outcome:\n` +
+        VERIFY.map(v => `- ${v.label}: ${v.cmd}`).join('\n') +
+        `\nDo not fix anything and do not edit any file. For a failure, error is the single most relevant line, ` +
+        `200 characters max. Never paste full output.`,
+      {
+        label: 'checks', phase: 'Checks',
+        schema: {
+          type: 'object',
+          properties: {
+            all_passed: { type: 'boolean' },
+            checks: { type: 'array', items: { type: 'object', properties: {
+              label: { type: 'string' }, cmd: { type: 'string' }, passed: { type: 'boolean' }, error: { type: ['string', 'null'] },
+            }, required: ['label', 'passed'] } },
+          },
+          required: ['all_passed', 'checks'],
+        },
+      }
+    )
+  }
+
+  return { tasks: TASKS.map(t => lines.get(t.id) ?? line(t, 'skipped', 'never launched', 'Not run.')), verify }
+  ```
+
+  The orchestrator writes `summary.json` from the returned object as is, then does Steps 8–10. A failed run can
+  also be resumed with `resumeFromRunId` (finished tasks come from the cache); the neutral path is `--only`.
+- **`Agent`** (no `Workflow`): read tasks of a wave as up to `--parallel` `Agent` calls in one message
+  (`general-purpose`, `model`/`effort` from the tier), write tasks one call per turn; the orchestrator commits and
+  runs the checks itself with `Bash`. Only the final message comes back, so keep its last line.
+- **Headless** (`claude -p "/orchestrate … --yes"`): allow `Agent` (and `Workflow` if used), `Write`, `Read`,
+  `Glob`, `Grep`, `Bash(git *)`, `Bash(jq *)`, `Bash(mkdir *)`, `Bash(date *)`, `Bash(printenv *)`,
+  `Bash(realpath *)`, `Bash(mktemp *)`, `Bash(rm *)`, plus `Edit` for write tasks, and `--add-dir` both the runs
+  directory and `"$TMPDIR"` (without the latter the line check's temporary file cannot be deleted). **Probado**
+  with a 3-task graph (two reads, one write that depends on a read) in a scratch repository: with `Agent` and
+  `Workflow` both allowed, the orchestrator chose three `Agent` calls, ran the write after its dependency, and
+  wrote `graph.json`, `summary.json` and `summary.md`; `--dry-run` launched nothing. With
+  `~/.claude/commands/orchestrate.md` still present, `/orchestrate` ran the skill.
+
+## Headless (for `bin/pr-batch` and `bin/agent-batch`)
+
+Both runners start sessions through `headless_run` in `bin/lib/batch.sh`; `agent-batch` adds `Edit`,
+`MultiEdit` and `--permission-mode acceptEdits` for write tasks, `--effort` from the task, and `--model` from the
+tier (`haiku`/`opus`) unless `--model` was given.
 
 ```bash
 AGENT_SKILLS_RUNS="$RUNS" claude -p "/pr-review owner/repo#401 --auto --run-dir=$RUN_DIR" \

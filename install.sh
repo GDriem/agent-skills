@@ -107,19 +107,23 @@ short_description() {
     pr-ready) echo 'Check whether one reviewed GitHub PR is ready' ;;
     pr-review-all) echo 'Review open GitHub PRs, one fresh agent per PR' ;;
     pr-ready-all) echo 'Check readiness of open PRs, one agent per PR' ;;
+    orchestrate) echo 'Split a multi-task prompt across fresh agents' ;;
     *) skill_summary "$1" ;;
   esac
 }
 
-# Codex: batch skills write to GitHub for many PRs at once, so they only run when called by name.
+# Codex: skills that launch a fleet of agents (the batch skills, orchestrate) only run when called by name.
 openai_yaml() {
-  local n=$1 implicit=true target='the pull request'
-  case "$n" in *-all) implicit=false target='the open pull requests' ;; esac
+  local n=$1 implicit=true prompt="Use \$$n on the pull request."
+  case "$n" in
+    *-all) implicit=false prompt="Use \$$n on the open pull requests." ;;
+    orchestrate) implicit=false prompt="Use \$$n to split these tasks across fresh agents." ;;
+  esac
   printf '%s\n' "$MARK" \
     'interface:' \
     "  display_name: \"$(display_name "$n")\"" \
     "  short_description: \"$(short_description "$n" | sed 's/"/\\"/g')\"" \
-    "  default_prompt: \"Use \$$n on $target.\"" \
+    "  default_prompt: \"$prompt\"" \
     'policy:' \
     "  allow_implicit_invocation: $implicit"
 }

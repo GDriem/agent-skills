@@ -60,7 +60,24 @@ skills with `--ephemeral`.
 - Token counts per thread: each child has its own rollout under `$CODEX_HOME/sessions/…`; the last
   `token_count` event holds the totals. The `turn.completed` event of `--json` only covers the parent.
 
-## Headless (for `bin/pr-batch`)
+## `orchestrate`
+
+- **Tiers.** Codex has no small/large model aliases, so the tier moves the effort instead: `small` →
+  `reasoning_effort: "low"`, `default` → nothing, `large` → `"high"`. An explicit `effort` in the task wins.
+  `model` only when the user gave one (`spawn_agent` `model`; `-m` in `bin/agent-batch`, which also maps the tier
+  to `-c model_reasoning_effort=…`).
+- **One child per task**: `spawn_agent` with `task_name` (`task_<id>`), `fork_turns: "none"`, the task prompt of
+  `contract.md` as `message`. Read tasks of a wave up to `--parallel` alive at once; write tasks one at a time.
+  Wait with `wait_agent` and the longest `timeout_ms`, as in the batch skills.
+- The orchestrator commits (`--commit`) and runs the checks itself with the shell. In `workspace-write`, the
+  children can only write under the workdir, `/tmp`, `$TMPDIR` and `--add-dir` directories: start the session in
+  the repository root and add the runs directory with `--add-dir`.
+- Not under `codex exec --ephemeral` (children need the session store).
+- **Probado** with the same 3-task graph as Claude Code, under `codex exec -s workspace-write --add-dir <runs>`:
+  three children (`thread_spawn` in their rollouts), `fork_turns: "none"` passed by the orchestrator on its own,
+  the write task started after the reads, and the run line parsed. `--dry-run` launched nothing.
+
+## Headless (for `bin/pr-batch` and `bin/agent-batch`)
 
 ```bash
 AGENT_SKILLS_RUNS="$RUNS" codex exec -C "$WORKDIR" \
