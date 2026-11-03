@@ -76,6 +76,8 @@ skills with `--ephemeral`.
 - **Probado** with the same 3-task graph as Claude Code, under `codex exec -s workspace-write --add-dir <runs>`:
   three children (`thread_spawn` in their rollouts), `fork_turns: "none"` passed by the orchestrator on its own,
   the write task started after the reads, and the run line parsed. `--dry-run` launched nothing.
+- **`--only`, probado**: `$orchestrate --only t3 --run-dir=<that run> --yes` spawned a single child for t3, took
+  t1 from the earlier `summary.json`, left the t1 and t2 lines untouched and rewrote `summary.md`.
 
 ## Headless (for `bin/pr-batch` and `bin/agent-batch`)
 
@@ -97,6 +99,13 @@ tail -n 1 "$WORK/pr-401.codex.txt"      # the contract line
   api.github.com"). The skills call many `gh` subcommands (`api`, `pr view`, `pr diff`, `pr checks`,
   `search`), so either allow the prefix `["gh"]` or pass `-c sandbox_workspace_write.network_access=true` for
   the run (**probado**, no config file touched). The second is what `bin/pr-batch` uses.
+- `bin/pr-batch --harness codex --dry-run <n>` on a real PR after the move to `bin/lib/batch.sh`
+  (**probado**): contract line parsed, `posted:false`, `summary.json`/`summary.md` written, exit 0.
+- **The shell is a zsh login shell** (**probado**): it sources the user's profile, which puts the real
+  directories back in front of `PATH`. A fake `gh` (or any stub) prepended to `PATH` before `codex exec` is
+  bypassed by the commands the model runs. To put a stub in front, point `ZDOTDIR` at a directory whose
+  `.zprofile` sources the real one and whose `.zlogin` prepends the stub. A fake `HOME` also hides the keychain
+  that `gh` reads its token from: pass `GH_TOKEN`.
 - `-m <model>` per PR; `-c` overrides any config key for one run.
 - `CODEX_HOME=<dir>` isolates a run from the user's skills and memories. A directory with symlinks to
   `~/.codex/{auth.json,config.toml,rules}` and no `skills/` is how the smoke avoided the old port (**probado**).

@@ -267,6 +267,14 @@ what was tested in this repo is marked **probado**, the rest comes from the docs
   `Workflow` both allowed, the orchestrator chose three `Agent` calls, ran the write after its dependency, and
   wrote `graph.json`, `summary.json` and `summary.md`; `--dry-run` launched nothing. With
   `~/.claude/commands/orchestrate.md` still present, `/orchestrate` ran the skill.
+- **`Workflow` path, probado** (same graph, `Workflow` allowed and `Agent` not, the prompt asking for a
+  workflow): one `Workflow` call ran four agents (one per task, one for the checks), the `small` tier went to
+  `haiku`, and the returned object became `summary.json` as `contract.md` defines it. The workflow runs in the
+  background, so `-p` ends its first turn and resumes on the task notification: the stream has two `result`
+  events, and the second one carries the session totals. Workflow agents inherit `--allowedTools`; their compound
+  `Bash` commands were denied and they retried with simple ones.
+- **`--only`, probado**: `/orchestrate --only t3 --run-dir=<that run> --yes` relaunched only t3 (one `Agent`),
+  took t1 from the earlier `summary.json`, left the t1 and t2 lines untouched and rewrote `summary.md`.
 
 ## Headless (for `bin/pr-batch` and `bin/agent-batch`)
 
@@ -283,6 +291,8 @@ jq -r '.result' "$WORK/pr-401.claude.json" | tail -n 1     # the contract line
 ```
 
 - `/pr-review` inside the `-p` prompt expands the skill (**probado**).
+- `bin/pr-batch --harness claude --dry-run <n>` on a real PR after the move to `bin/lib/batch.sh`
+  (**probado**): contract line parsed, `posted:false`, `summary.json`/`summary.md` written, exit 0.
 - The final message is `.result` of `--output-format json`; there is no flag to write it to a file, so redirect
   stdout.
 - Since 2.1.302, `-p` starts in manual permission mode and denies anything not pre-approved. The space before

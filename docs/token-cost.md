@@ -76,5 +76,53 @@ solo cambia lo que hacen los hijos.
   Con 2 PRs pesa ~8 % en Claude Code y ~21 % en Codex (input total de `pr-ready-all`, después del ajuste); con más PRs baja.
 - `bin/pr-batch` no tiene orquestador con modelo, así que es la opción más barata cuando no hace falta
   conversar con el lote (cron, CI), al precio de arrancar una sesión completa por PR.
-- Pendiente para la Sesión 6: medir con `--model` más barato en los hijos y comparar contra el port secuencial
-  viejo de Codex.
+- `--model` más barato en los hijos sigue sin medirse.
+
+## Sesión 6 (2026-11-03)
+
+Mismas versiones (Claude Code 2.1.309, Codex 0.166.0, modelo por defecto de cada uno). Las PRs son las mismas dos
+de la Sesión 3, con `--dry-run` y un `gh` envoltorio que bloquea toda escritura; los conteos de reviews y
+comentarios no cambiaron. `orchestrate` corrió en un repo de prueba: dos lecturas y una escritura que depende
+de la primera, sobre dos archivos de tres líneas.
+
+### `pr-review-all` de 2 PRs en Codex: skill nueva contra el port secuencial viejo
+
+El port viejo (el que se retiró en la Sesión 4) revisa las PRs una tras otra en la misma sesión. No tiene
+`--dry-run`, así que se le pidió frenar en la vista previa de cada PR y no publicar. Cada corrida tuvo su
+`CODEX_HOME` y un `HOME` que solo veía las skills de PR, para que la lista de skills fuera comparable.
+
+| Corrida | Input total | Sin caché | Output |
+|---|---|---|---|
+| Port viejo, secuencial (una sesión) | 797 k | 69 k | 4,9 k |
+| **Skill nueva, orquestador** | **261 k** | **14 k** | 2,7 k |
+| Skill nueva, hijo 1 | 510 k | 45 k | 3,5 k |
+| Skill nueva, hijo 2 | 954 k | 66 k | 4,4 k |
+| Skill nueva, total | 1 725 k | 125 k | 10,5 k |
+
+- Con dos PRs chicas, la versión de un agente por PR gasta **más del doble** que la secuencial. Cada hijo arranca
+  de cero y relee las convenciones, la skill y el repo. Además, los hijos verificaron más: uno bajó el tarball
+  del head y buscó usos en el repo. La calidad de las dos revisiones no se comparó; las dos llegaron al mismo
+  veredicto (`COMMENT`, sin hallazgos).
+- Lo que se compra con eso: el contexto del port viejo crece con cada PR (797 k para dos PRs, en una sola
+  conversación), y el del orquestador nuevo no; se puede paralelizar; y una PR que falla no contamina las
+  demás. Con muchas PRs o PRs grandes, el port secuencial acaba compactando o mezclando hallazgos de una PR en
+  otra.
+- El orquestador bajó de 312 k (Sesión 3, `pr-ready-all`) a 261 k.
+
+### `orchestrate` de 3 tareas
+
+| Corrida | Orquestador | Agentes de las tareas |
+|---|---|---|
+| Codex (3 hijos con `spawn_agent`) | 580 k de input (36 k sin caché), 4,8 k de output | 292 k (78 k sin caché), 2,1 k de output |
+| Claude Code por `Workflow` (4 agentes: 3 tareas + checks) | 678 k de caché leída, 51 k escrita, 11,2 k de output | 430 k leída, 102 k escrita, 6,7 k de output |
+| Claude Code, `--only t3` (1 `Agent`) | 414 k de caché leída, 36 k escrita, 6,0 k de output | 148 k leída, 32 k escrita, 2,3 k de output (0,72 USD la sesión) |
+| Codex, `--only t3` | 290 k de input | 73 k de input |
+
+La corrida de Claude Code costó 1,36 USD en total. Calculado con las proporciones habituales de precio (caché
+leída 0,1×, escritura 1,25×, output 5× el input), el orquestador es ≈ 53 % de ese costo.
+
+- **El orquestador tiene un costo fijo** de ~0,6–0,7 USD en Claude Code y ~250–600 k de input en Codex: arma el
+  grafo, confirma, valida las líneas, corre los checks y escribe los resúmenes. Con tareas de tres líneas eso
+  supera el trabajo de las tareas mismas. Conviene cuando las tareas son grandes o tienen que aislarse (que una
+  no vea lo que leyó otra); dos o tres cambios chicos salen más baratos pedidos directo, en una sola sesión.
+- `--only` no reduce mucho ese costo: el orquestador vuelve a leer la skill, el grafo y el resumen anterior.
