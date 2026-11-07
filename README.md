@@ -7,7 +7,7 @@ Hay una sola fuente: cada skill es una carpeta `skills/<nombre>/SKILL.md` en el 
 Skills, y un script la instala en cada harness. Las versiones por lote (`-all`) corren **cada PR en un agente
 aparte con su propio contexto**, así que la décima PR se revisa con el contexto tan limpio como la primera.
 
-## Estado (`v0.2.0`)
+## Estado (`v0.3.0`)
 
 | Harness | Estado |
 |---|---|
