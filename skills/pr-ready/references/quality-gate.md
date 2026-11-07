@@ -1,7 +1,7 @@
 # Quality gate
 
-Shared by `pr-review` (every finding) and `pr-ready` (every new gap). A candidate that fails any rule is fixed,
-downgraded, or dropped. It never reaches the preview as is.
+Shared by `pr-review` (every finding), `pr-ready` (every new gap) and `pr-fix` (every item, and its own diff). A
+candidate that fails any rule is fixed, downgraded, or dropped. It never reaches the preview as is.
 
 ## Verify first
 

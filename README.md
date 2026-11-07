@@ -11,13 +11,16 @@ aparte con su propio contexto**, así que la décima PR se revisa con el context
 
 | Harness | Estado |
 |---|---|
-| Claude Code | **Probado**: las cinco skills (también headless con `claude -p`), `bin/pr-batch`, `bin/agent-batch` e `install.sh` |
-| Codex | **Probado**: lo mismo, con `codex exec` |
+| Claude Code | **Probado**: las cinco skills de `v0.2.0` (también headless con `claude -p`), `bin/pr-batch`, `bin/agent-batch` e `install.sh`. `pr-fix` y `pr-fix-all`: escritas, **sin probar todavía** |
+| Codex | **Probado**: lo mismo, con `codex exec`. `pr-fix` y `pr-fix-all`: sin probar |
 | GitHub Copilot (CLI y VS Code), Gemini CLI, Cursor | Documentado, pendiente: la instalación los contempla, pero nada se probó y los runners todavía no los soportan |
 
 Qué se probó y cómo, en [`adapters/`](adapters) (lo marcado **probado**).
 
 Pendiente, sin fecha:
+
+- `pr-fix` y `pr-fix-all`: probarlas en Claude Code y Codex (interactivo, `--dry-run`, `--no-push`, un push real a
+  una PR de prueba y `bin/pr-batch --skill pr-fix`) antes de marcarlas probadas.
 
 - Copilot, Gemini y Cursor: probarlos, sumarlos a `bin/pr-batch` y `bin/agent-batch` y escribir sus adapters. Lo
   que falta confirmar de cada uno está en [docs/harness-matrix.md](docs/harness-matrix.md).
@@ -33,6 +36,8 @@ Pendiente, sin fecha:
 | `pr-ready <PR>` | Segunda pasada: confirma, leyendo el código en head, que cada hilo quedó atendido, busca huecos en los commits de fix y da veredicto. **Nunca aprueba**: si la PR está lista, te entrega el comentario de aprobación para que lo pegues tú | Solo comentarios de pendientes |
 | `pr-review-all` | `pr-review` para todas las PRs abiertas que no son draft, o para una lista. Un agente por PR | Sí |
 | `pr-ready-all` | `pr-ready` en lote. Un agente por PR | Solo pendientes |
+| `pr-fix <PR>` | Corrige lo que pidieron los revisores (humanos y bots) y el CI: hilos abiertos, puntos del cuerpo del review, comentarios de la PR y checks en rojo. Verifica cada uno, sigue las skills y convenciones propias del proyecto (arquitectura, front, back, tests), corrige en un worktree aparte, corre los checks, se revisa a sí misma y, tras confirmar, hace push y responde en cada hilo **sin resolverlo**. Las decisiones y los comentarios con los que no está de acuerdo te los pregunta | Sí, después de confirmar: commits (nunca force-push) y respuestas |
+| `pr-fix-all` | `pr-fix` en lote: tus PRs con feedback, una lista o un rango. Un agente y un worktree por PR; las decisiones quedan pendientes en `summary.md` | Sí |
 | `orchestrate` | Parte un prompt con varias tareas en un grafo de dependencias y lo ejecuta con un agente nuevo por tarea: lecturas en paralelo, escrituras en serie, y al final los checks del repo | No (con `--commit`, un commit local por tarea; nunca push) |
 
 Todas detectan el repo, el usuario y las convenciones en tiempo de ejecución, sin nada propio de un proyecto
@@ -103,7 +108,24 @@ pr-review-all --dry-run --parallel 2 --model <modelo>   # 2 agentes a la vez, mo
 pr-review-all --small-model <modelo>                    # modelo del tier budget (PRs chicas y triviales)
 pr-review-all --no-tiering       # todas como normales: una revisión completa por agente, sin agrupar
 pr-ready-all                     # pr-ready en lote; los LISTA traen su comentario de aprobación en summary.md
+pr-review-all 401-410            # las PRs abiertas de ese rango (sirve en las tres -all; se mezcla: 401,405-410)
+
+pr-fix 401                       # corrige, muestra el plan y el diff, y pide confirmar antes del push
+pr-fix 401 --dry-run             # solo triage y plan: no edita, no hace push, no responde
+pr-fix 401 --no-push             # corrige y commitea en el worktree; tú revisas y empujas
+pr-fix 401 --only=blocker,ci     # solo bloqueantes y checks en rojo
+pr-fix-all                       # tus PRs abiertas con feedback (con --any-author, también las de otros)
+pr-fix-all 401-410 --no-push
 ```
+
+**Ciclo:** `pr-review` → `pr-fix` → `pr-ready`. `pr-fix` trabaja en un worktree propio bajo
+`~/.agent-skills/worktrees` (o `$AGENT_SKILLS_WORKTREES`), así que nunca toca tu árbol de trabajo y varias PRs
+corren en paralelo sin pisarse; necesita correr dentro de un clon del repo. Antes de editar busca las skills,
+agentes y reglas del proyecto (`.claude/skills`, `.agents/skills`, `.github/instructions`, `.cursor/rules`,
+`AGENTS.md`, ADRs, config de linters) y aplica las que corresponden a los archivos que toca. Solo hace `git push`
+simple sobre el head de la PR: si la rama se movió, no empuja y deja el worktree. Un `[DECISION]`, un comentario
+que cree incorrecto, algo fuera de alcance o una dependencia nueva siempre te lo pregunta; en lote (o con
+`--auto`) queda pendiente con su propuesta.
 
 Sin `--dry-run`, una `-all` pide confirmación una sola vez para todo el lote (cada agente corre con `--auto`
 y publica). `--parallel 1` corre las PRs una detrás de otra.
@@ -131,6 +153,7 @@ bin/pr-batch --harness claude --dry-run 401,405          # o --harness codex
 bin/pr-batch --harness codex --skill pr-ready --parallel 2 all
 bin/pr-batch --harness claude --yes --repo owner/repo 12  # publica; --yes hace falta si stdin no es una terminal
 bin/pr-batch --harness claude --retry-failed ~/.agent-skills/runs/2026-11-02T10-00   # solo las que dieron ERROR
+bin/pr-batch --harness claude --skill pr-fix --allow-tool "Bash(npm *)" --yes 401-410  # pr-fix: permisos para los checks
 ```
 
 Deja `summary.json` y `summary.md` en el directorio del lote, imprime la tabla y sale con código 1 si alguna PR

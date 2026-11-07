@@ -83,6 +83,14 @@ skills with `--ephemeral`.
 - **`--only`, probado**: `$orchestrate --only t3 --run-dir=<that run> --yes` spawned a single child for t3, took
   t1 from the earlier `summary.json`, left the t1 and t2 lines untouched and rewrote `summary.md`.
 
+## `pr-fix` and `pr-fix-all` (not tested yet)
+
+- The session needs `workspace-write` with network access (the fetch, the push and `gh`), and the worktrees
+  directory as a writable root: `bin/pr-batch --skill pr-fix` passes it with `--add-dir`. Interactive sessions
+  ask the first time a command writes outside the workspace.
+- `spawn_agent` children inherit the sandbox; each one creates its own worktree, so up to `--parallel` can run at
+  once.
+
 ## Headless (for `bin/pr-batch` and `bin/agent-batch`)
 
 ```bash

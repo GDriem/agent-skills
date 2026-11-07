@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pr-batch: run pr-review or pr-ready on a batch of PRs, one headless harness session per PR.
+# pr-batch: run pr-review, pr-ready or pr-fix on a batch of PRs, one headless harness session per PR.
 # Universal fallback for the -all skills, and usable from cron or CI. See README.md and adapters/.
 # Works with the bash 3.2 that ships with macOS: no `wait -n`, no associative arrays, no mapfile.
 
@@ -26,12 +26,13 @@ usage() {
   cat <<EOF
 Usage: $PROG --harness claude|codex [options] <prs|all>
 
-  <prs>                  PR numbers, comma- or space-separated (401,405 or 401 405); "all" or nothing
-                         means every open, non-draft PR of the repository
+  <prs>                  PR numbers, comma- or space-separated (401,405 or 401 405), and ranges of open
+                         PRs (401-410); "all" or nothing means every open, non-draft PR of the repository
+                         (for pr-fix: yours, with review feedback or a failing check)
   --harness H            claude or codex (copilot, gemini and cursor are not implemented yet)
-  --skill S              pr-review (default) or pr-ready
+  --skill S              pr-review (default), pr-ready or pr-fix
   --repo owner/repo      default: the repository of the current directory
-  --parallel N           sessions at a time, default 3; 1 runs them one after another
+  --parallel N           sessions at a time, default 3 (2 for pr-fix); 1 runs them one after another
   --model M              model for the normal PR sessions
   --small-model M        model for the budget tier (trivial and small PRs, pr-review only); default:
                          haiku for claude, the configured model at low reasoning effort for codex
@@ -40,6 +41,11 @@ Usage: $PROG --harness claude|codex [options] <prs|all>
   --yes                  do not ask before a batch that posts (required when stdin is not a terminal)
   --lang L               forwarded as --lang=L
   --focus F              forwarded as --focus="F"
+  --no-push              pr-fix: fix and commit in each worktree, push and post nothing
+  --only K               pr-fix: forwarded as --only=K (blocker,suggestion,decision,comment,ci)
+  --no-checks            pr-fix: forwarded; skip the repository's checks
+  --any-author           pr-fix: with "all" or a range, include PRs authored by others
+  --allow-tool T         pr-fix with claude: extra tool for the checks, e.g. "Bash(npm *)" (repeatable)
   --run-dir DIR          write reports and summary here (default: \$AGENT_SKILLS_RUNS or
                          ~/.agent-skills/runs, plus a timestamp)
   --retry-failed DIR     rerun only the PRs with verdict ERROR in DIR/summary.json, in DIR
@@ -50,6 +56,13 @@ EOF
 
 # One contract line with no agent behind it (skipped before launch, or a session without a result line).
 synth_line() { # <pr> <verdict> <error> <summary>
+  if [ "$PRB_SKILL" = pr-fix ]; then
+    jq -cn --arg repo "$PRB_REPO" --argjson pr "$1" --arg verdict "$2" --arg error "$3" --arg summary "$4" \
+      '{skill:"pr-fix",repo:$repo,pr:$pr,head:null,new_head:null,verdict:$verdict,
+        items:{fixed:0,already_done:0,answered:0,pending:0,failed:0},commits:[],pushed:false,posted:false,
+        checks:null,worktree:null,report:null,summary:$summary,error:$error}'
+    return
+  fi
   jq -cn --arg skill "$PRB_SKILL" --arg repo "$PRB_REPO" --argjson pr "$1" --arg verdict "$2" \
     --arg error "$3" --arg summary "$4" \
     '{skill:$skill,repo:$repo,pr:$pr,head:null,verdict:$verdict,max_priority:null,
@@ -69,7 +82,8 @@ run_unit() {
       synth_line "$n" ERROR "$(last_line < "$PRB_WORK/pr-$n.view.err")" "PR could not be read." > "$out"
       continue
     fi
-    case "$(jq -r 'if .state != "OPEN" then (.state | ascii_downcase) elif .isDraft then "draft" else "ok" end' <<<"$state")" in
+    case "$(jq -r --arg skill "$PRB_SKILL" 'if .state != "OPEN" then (.state | ascii_downcase)
+        elif .isDraft and $skill != "pr-fix" then "draft" else "ok" end' <<<"$state")" in
       ok) open+=("$n") ;;
       closed) synth_line "$n" SKIPPED closed "Skipped: the PR is closed." > "$out" ;;
       merged) synth_line "$n" SKIPPED merged "Skipped: the PR is merged." > "$out" ;;
@@ -88,6 +102,7 @@ run_unit() {
   [ "$PRB_DRY" = 1 ] && tail="$tail --dry-run"
   [ -n "$PRB_LANG" ] && tail="$tail --lang=$PRB_LANG"
   [ -n "$PRB_FOCUS" ] && tail="$tail --focus=\"${PRB_FOCUS//\"/\'}\""
+  [ -n "$PRB_FIX_FLAGS" ] && tail="$tail$PRB_FIX_FLAGS"
 
   local key=${open[0]}
   raw="$PRB_WORK/unit-$key.$PRB_HARNESS.out"; log="$PRB_WORK/unit-$key.$PRB_HARNESS.log"
@@ -102,8 +117,15 @@ $PRB_SKILL $PRB_REPO#$n $tail"; done
 Finish one PR before starting the next, and never carry a finding or an assumption from one PR to another.
 Nobody can answer questions in this session. Your final message must end with the result line of each PR, in the order above, one per line, with nothing after the last one."
   fi
-  line=$(BATCH_MODEL=$model BATCH_EFFORT=$effort BATCH_LINES=${#open[@]} BATCH_ADD_DIRS="$PRB_RUN_DIR:$PRB_TMP" \
-    BATCH_TOOLS='Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm *),Read,Write,Glob,Grep' \
+  local tools='Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm *),Read,Write,Glob,Grep'
+  local dirs="$PRB_RUN_DIR:$PRB_TMP" permission=""
+  if [ "$PRB_SKILL" = pr-fix ]; then   # edits in its own worktree and runs the repository's checks there
+    tools="$tools,Edit,MultiEdit${PRB_ALLOW:+,$PRB_ALLOW}"
+    dirs="$dirs:$AGENT_SKILLS_WORKTREES"
+    permission=acceptEdits
+  fi
+  line=$(BATCH_MODEL=$model BATCH_EFFORT=$effort BATCH_LINES=${#open[@]} BATCH_ADD_DIRS="$dirs" \
+    BATCH_TOOLS="$tools" BATCH_PERMISSION=$permission \
     headless_run "$PRB_HARNESS" "$prompt" "$raw" "$log")
 
   # Each PR takes the result line whose "pr" is its number, wherever it is among the trailing lines.
@@ -124,7 +146,8 @@ fi
 # ---------------------------------------------------------------------------------------------------
 # Arguments
 
-harness="" skill="" repo="" parallel=3 model="" small_model="" tiering=1 dry=0 yes=0 lang="" focus="" run_dir="" retry=""
+harness="" skill="" repo="" parallel="" model="" small_model="" tiering=1 dry=0 yes=0 lang="" focus="" run_dir="" retry=""
+no_push=0 only="" no_checks=0 any_author=0 allow=""
 tokens=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -149,6 +172,13 @@ while [ $# -gt 0 ]; do
     --run-dir=*) run_dir=${1#*=}; shift ;;
     --retry-failed) retry=${2:-}; shift 2 ;;
     --retry-failed=*) retry=${1#*=}; shift ;;
+    --only) only=${2:-}; shift 2 ;;
+    --only=*) only=${1#*=}; shift ;;
+    --allow-tool) allow="${allow:+$allow,}${2:-}"; shift 2 ;;
+    --allow-tool=*) allow="${allow:+$allow,}${1#*=}"; shift ;;
+    --no-push) no_push=1; shift ;;
+    --no-checks) no_checks=1; shift ;;
+    --any-author) any_author=1; shift ;;
     --dry-run) dry=1; shift ;;
     --yes) yes=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -158,7 +188,6 @@ while [ $# -gt 0 ]; do
 done
 
 check_harness "$harness"
-check_parallel "$parallel"
 check_bins gh jq awk "$harness"
 
 # Retry: PRs, run dir, repo and skill come from the previous summary unless given.
@@ -176,31 +205,84 @@ if [ -n "$retry" ]; then
 fi
 
 skill=${skill:-pr-review}
-case "$skill" in pr-review|pr-ready) ;; *) die "--skill must be pr-review or pr-ready" ;; esac
+case "$skill" in pr-review|pr-ready|pr-fix) ;; *) die "--skill must be pr-review, pr-ready or pr-fix" ;; esac
 [ "$skill" = pr-review ] || tiering=0
-
-if [ -z "$repo" ]; then
-  repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) ||
-    die "not inside a clone with a GitHub remote; pass --repo owner/repo"
+if [ -z "$parallel" ]; then
+  parallel=3
+  [ "$skill" = pr-fix ] && parallel=2
 fi
+check_parallel "$parallel"
+if [ "$skill" != pr-fix ]; then
+  [ "$no_push$no_checks$any_author" = 000 ] && [ -z "$only$allow" ] ||
+    die "--no-push, --only, --no-checks, --any-author and --allow-tool only apply to --skill pr-fix"
+fi
+[ "$harness" = claude ] || [ -z "$allow" ] || echo "$PROG: --allow-tool only applies to claude; ignored" >&2
 
-# PR list: explicit numbers (validated, deduplicated, in the given order) or every open, non-draft PR.
-prs=()
+here=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+if [ -z "$repo" ]; then
+  [ -n "$here" ] || die "not inside a clone with a GitHub remote; pass --repo owner/repo"
+  repo=$here
+fi
+# pr-fix commits in a worktree of this clone, so the batch must run inside a clone of the target repository.
+[ "$skill" != pr-fix ] || [ "$here" = "$repo" ] || die "pr-fix needs to run inside a clone of $repo"
+
+# Open, non-draft PRs, one number per line, ascending. For pr-fix, only PRs with feedback (changes requested,
+# any review, or a failing check) whose author is the current user unless --any-author, and drafts too inside a
+# range (skills/pr-fix-all/references/batch.md, Step 2).
+open_prs() { # <mode>: range (drafts count for pr-fix) or all
+  local me="" any=false fix=false drafts=false fields=number,isDraft
+  if [ "$skill" = pr-fix ]; then
+    fix=true fields=$fields,author,reviewDecision,reviews,statusCheckRollup
+    [ "$1" = range ] && drafts=true
+    [ "$any_author" = 1 ] && any=true
+    [ "$any" = true ] || me=$(gh api user -q .login) || die "gh api user failed"
+  fi
+  gh pr list --repo "$repo" --state open --limit 1000 --json "$fields" |
+    jq -r --arg me "$me" --argjson any "$any" --argjson fix "$fix" --argjson drafts "$drafts" '
+      .[] | select($drafts or (.isDraft | not))
+      | select($any or $me == "" or .author.login == $me)
+      | select(($fix | not) or .reviewDecision == "CHANGES_REQUESTED" or (.reviews | length > 0)
+               or ([.statusCheckRollup[]? | select(.conclusion == "FAILURE")] | length > 0))
+      | .number' | sort -n
+}
+
+# PR list: explicit numbers (validated, deduplicated, in the given order), then the open PRs inside the given
+# ranges, or the open PRs of the repository.
+prs=() ranges=()
 list_all=0
 if [ ${#tokens[@]} -eq 0 ]; then list_all=1; fi
+add_pr() { case " ${prs[*]-} " in *" $1 "*) ;; *) prs+=("$1") ;; esac; }
 for t in ${tokens[@]+"${tokens[@]}"}; do
   for n in ${t//,/ }; do
     n=${n#\#}
     [ "$n" = all ] && { list_all=1; continue; }
+    case "$n" in
+      *-*)
+        lo=${n%%-*} hi=${n#*-}
+        case "$lo" in ''|*[!0-9]*) die "invalid PR range: $n" ;; esac
+        case "$hi" in ''|*[!0-9]*) die "invalid PR range: $n" ;; esac
+        [ "$lo" -gt 0 ] && [ "$lo" -le "$hi" ] || die "invalid PR range: $n"
+        [ $((hi - lo)) -lt 500 ] || die "PR range too large (at most 500 numbers): $n"
+        ranges+=("$lo-$hi")
+        continue ;;
+    esac
     case "$n" in ''|*[!0-9]*) die "invalid PR number: $n" ;; esac
     [ "$n" -gt 0 ] || die "invalid PR number: $n"
-    case " ${prs[*]-} " in *" $n "*) ;; *) prs+=("$n") ;; esac
+    add_pr "$n"
   done
 done
+if [ ${#ranges[@]} -gt 0 ]; then
+  [ "$list_all" = 0 ] || die "give PR numbers or ranges, or 'all', not both"
+  for n in $(open_prs range); do
+    for r in "${ranges[@]}"; do
+      if [ "$n" -ge "${r%-*}" ] && [ "$n" -le "${r#*-}" ]; then add_pr "$n"; break; fi
+    done
+  done
+  [ ${#prs[@]} -gt 0 ] || { echo "No open PRs in ${ranges[*]} of $repo."; exit 0; }
+fi
 if [ "$list_all" = 1 ]; then
   [ ${#prs[@]} -eq 0 ] || die "give PR numbers or 'all', not both"
-  prs=($(gh pr list --repo "$repo" --state open --limit 1000 --json number,isDraft \
-    --jq '.[] | select(.isDraft | not) | .number' | sort -n))
+  prs=($(open_prs all))
   [ ${#prs[@]} -lt 1000 ] || echo "warning: 1000 PRs listed; the list may be truncated" >&2
 fi
 if [ ${#prs[@]} -eq 0 ]; then
@@ -235,9 +317,13 @@ if [ "$tiering" = 1 ]; then
   echo "  tiers:$classes; budget model ${small_model:-$([ "$harness" = claude ] && echo haiku || echo 'default at low effort')}"
 fi
 
-if [ "$dry" = 0 ] && [ "$yes" = 0 ]; then
+if [ "$dry" = 0 ] && [ "$no_push" = 0 ] && [ "$yes" = 0 ]; then
   if [ -t 0 ]; then
-    printf 'Every PR session runs with --auto and will post to GitHub. Continue? [y/N] '
+    if [ "$skill" = pr-fix ]; then
+      printf 'Every PR session runs with --auto: it will push commits to each PR branch and reply in its threads. Continue? [y/N] '
+    else
+      printf 'Every PR session runs with --auto and will post to GitHub. Continue? [y/N] '
+    fi
     read -r answer
     case "$answer" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 0 ;; esac
   else
@@ -250,8 +336,16 @@ fi
 
 tmp_root=${TMPDIR:-/tmp}
 work=$(mktemp -d "${tmp_root%/}/pr-batch.XXXXXX")
+fix_flags=""
+[ "$no_push" = 1 ] && fix_flags="$fix_flags --no-push"
+[ -n "$only" ] && fix_flags="$fix_flags --only=$only"
+[ "$no_checks" = 1 ] && fix_flags="$fix_flags --no-checks"
+if [ "$skill" = pr-fix ]; then
+  AGENT_SKILLS_WORKTREES=$(abs_dir "${AGENT_SKILLS_WORKTREES:-$HOME/.agent-skills/worktrees}")
+fi
 export PRB_HARNESS=$harness PRB_SKILL=$skill PRB_REPO=$repo PRB_RUN_DIR=$run_dir PRB_WORK=$work \
-  PRB_MODEL=$model PRB_SMALL_MODEL=$small_model PRB_DRY=$dry PRB_LANG=$lang PRB_FOCUS=$focus PRB_TMP=$tmp_root
+  PRB_MODEL=$model PRB_SMALL_MODEL=$small_model PRB_DRY=$dry PRB_LANG=$lang PRB_FOCUS=$focus PRB_TMP=$tmp_root \
+  PRB_FIX_FLAGS=$fix_flags PRB_ALLOW=$allow AGENT_SKILLS_WORKTREES=${AGENT_SKILLS_WORKTREES:-}
 
 printf '%s\n' "${units[@]}" | xargs -P "$parallel" -I{} "$SELF" --one {} || true
 
@@ -299,16 +393,26 @@ flags="--harness $harness --skill $skill --parallel $parallel"
 [ "$dry" = 1 ] && flags="$flags --dry-run"
 [ -n "$lang" ] && flags="$flags --lang $lang"
 [ -n "$focus" ] && flags="$flags --focus \"$focus\""
+[ "$no_push" = 1 ] && flags="$flags --no-push"
+[ -n "$only" ] && flags="$flags --only $only"
+[ "$no_checks" = 1 ] && flags="$flags --no-checks"
+[ "$any_author" = 1 ] && flags="$flags --any-author"
+[ -n "$allow" ] && flags="$flags --allow-tool \"$allow\""
 
 table=$(jq -r --arg skill "$skill" '
   def cell: tostring | gsub("\\|"; "\\|") | gsub("\n"; " ");
   def opt: if . == null then "—" else . end;
+  if $skill == "pr-fix" then
+    "| PR | Verdict | Fixed / Already / Answered / Pending / Failed | Commits | Pushed | Replied | Checks | Summary | Report |\n|---|---|---|---|---|---|---|---|---|",
+    (.[] | "| #\(.pr) | \(.verdict) | \(.items.fixed) / \(.items.already_done) / \(.items.answered) / \(.items.pending) / \(.items.failed) | \(.commits | length) | \(.pushed) | \(.posted) | \(if .checks == null then "—" elif .checks.all_passed then "pass" else "fail" end) | \(.summary | opt | cell) | \(.report | opt) |")
+  else
   (if $skill == "pr-ready"
      then "| PR | Tier | Verdict | Max priority | Blocking / Suggestion / Decision | Pending | Posted | Summary | Report |\n|---|---|---|---|---|---|---|---|---|"
      else "| PR | Tier | Verdict | Max priority | Blocking / Suggestion / Decision | Posted | Summary | Report |\n|---|---|---|---|---|---|---|---|" end),
   (.[] | "| #\(.pr) | \(.tier // "normal")\(if .escalated then " → normal" else "" end) | \(.verdict) | \(.max_priority | opt) | \(.findings.blocking) / \(.findings.suggestion) / \(.findings.decision) |"
      + (if $skill == "pr-ready" then " \(.pending | opt) |" else "" end)
      + " \(.posted) | \(.summary | opt | cell) | \(.report | opt) |")
+  end
 ' "$summary_json")
 
 problems=$(jq -r '.[] | select(.verdict == "ERROR" or .verdict == "SKIPPED") | "- #\(.pr) \(.verdict): \(.error)"' "$summary_json")
@@ -348,6 +452,22 @@ summary_md="$run_dir/summary.md"
       fi
     done
   fi
+  if [ "$skill" = pr-fix ]; then
+    jq -r '.[] | select(.items.pending > 0) | "\(.pr)|\(.report // "")"' "$summary_json" |
+    while IFS= read -r row; do
+      n=${row%%|*} report=${row#*|}
+      echo; echo "## #$n pending"; echo
+      if [ -n "$report" ] && [ -f "$report" ] && grep -q '<!-- pending:start -->' "$report"; then
+        sed -n '/<!-- pending:start -->/,/<!-- pending:end -->/p' "$report" | sed '1d;$d'
+      else
+        echo "Pending block not found in the report: ${report:-no report}"
+      fi
+    done
+    kept=$(jq -r '.[] | select(.worktree != null) | "- #\(.pr): \(.worktree)\(if .error then " (\(.error))" else "" end)"' "$summary_json")
+    if [ -n "$kept" ]; then
+      echo; echo "## Worktrees kept"; echo; echo "$kept"
+    fi
+  fi
 } > "$summary_md"
 
 echo
@@ -362,6 +482,7 @@ batch_skill="$skill-all"
 jq -c --arg skill "$batch_skill" --arg repo "$repo" --arg run_dir "$run_dir" --argjson dry "$([ "$dry" = 1 ] && echo true || echo false)" \
   --arg sj "$summary_json" --arg sm "$summary_md" '
   (if $skill == "pr-ready-all" then ["READY","NOT_READY","ERROR","SKIPPED"]
+   elif $skill == "pr-fix-all" then ["FIXED","PARTIAL","NOTHING_TO_FIX","PLANNED","ERROR","SKIPPED"]
    else ["REQUEST_CHANGES","COMMENT","ERROR","SKIPPED"] end) as $verdicts
   | . as $lines
   | {skill:$skill, repo:$repo, run_dir:$run_dir, total:length,

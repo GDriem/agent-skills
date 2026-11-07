@@ -17,6 +17,7 @@ after the skill name instead.
 |---|---|
 | (empty) or `all` | every open, non-draft PR of the repository |
 | `401,405,410` | only these PR numbers (also how you retry the ones that failed) |
+| `401-410` | the open PRs numbered 401 to 410; mixes with numbers: `401,405-410` |
 | `--repo owner/repo` | target another repository instead of the current directory's |
 | `--parallel N` | at most N PR agents at a time; default 3; `1` runs them one after another |
 | `--model M` | model for the PR agents (the orchestrator keeps the session's model) |

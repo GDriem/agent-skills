@@ -105,8 +105,10 @@ short_description() {
   case "$1" in
     pr-review) echo 'Review one GitHub PR and post verified findings' ;;
     pr-ready) echo 'Check whether one reviewed GitHub PR is ready' ;;
+    pr-fix) echo 'Fix the review feedback of one GitHub PR and push it' ;;
     pr-review-all) echo 'Review open GitHub PRs, one fresh agent per PR' ;;
     pr-ready-all) echo 'Check readiness of open PRs, one agent per PR' ;;
+    pr-fix-all) echo 'Fix review feedback on several PRs, one agent per PR' ;;
     orchestrate) echo 'Split a multi-task prompt across fresh agents' ;;
     *) skill_summary "$1" ;;
   esac

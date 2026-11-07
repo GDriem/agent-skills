@@ -4,7 +4,8 @@
   `pr-review` y `pr-ready` sobre la misma PR en el mismo minuto se pisaban; pasó en el smoke), y se agrega
   `--run-dir=<ruta>` para que un lote fije el directorio. Enmienda de la Sesión 5: contrato por tarea para
   `orchestrate` y `bin/agent-batch` (§4 bis). Enmienda del 2026-11-03: tier por tamaño, modo ligero y escalado
-  en `pr-review-all` (§4 ter).
+  en `pr-review-all` (§4 ter). Enmienda del 2026-11-06: `pr-fix` y `pr-fix-all`, la primera skill que escribe
+  código y hace push (§4 quater).
 - **Fecha:** 2026-11-02
 - **Contexto previo:** [matriz de harnesses](../harness-matrix.md)
 
@@ -141,9 +142,45 @@ mantiene, pero el costo pasa a depender del tamaño:
   válida.
 - `pr-ready-all` no cambia: `pr-ready` no tiene modo ligero.
 
+### 4 quater. `pr-fix`: la primera skill que escribe (2026-11-06)
+
+`pr-review` y `pr-ready` nunca tocan el árbol; `pr-fix` corrige lo que pidieron los revisores y el CI y lo empuja a
+la rama de la PR. Para que eso no rompa nada de lo anterior:
+
+- **Worktree propio por PR**, desprendido en el head (`git worktree add --detach`), bajo
+  `$AGENT_SKILLS_WORKTREES` o `~/.agent-skills/worktrees`, nunca dentro del run dir. El árbol del usuario no se
+  toca, y en lote cada agente tiene el suyo. El fetch es `refs/pull/<n>/head` con `--no-write-fetch-head`: no
+  actualiza ninguna ref, así que varios agentes sobre el mismo clon no se pisan. Requiere un clon local; la skill
+  nunca clona.
+- **La historia solo avanza**: `git push` simple de commits nuevos sobre el head. Nunca force, amend ni rebase de
+  algo empujado, nunca `--no-verify`. Si la rama se movió durante la corrida, no empuja y deja el worktree.
+- **Sin atribución a la IA**: ni commits ni respuestas llevan `Co-Authored-By`, `Generated with` ni mención de
+  Claude, Copilot, Codex, Gemini, Cursor u otra herramienta, aunque el harness la agregue por defecto. Después de
+  cada commit revisa el mensaje (un hook o el harness pueden sumar un trailer) y, antes del push, todos los del
+  rango.
+- **Hilos**: responde en cada uno con el commit, pero **nunca lo resuelve**; eso lo decide el revisor y lo audita
+  `pr-ready`.
+- **Personas antes que suposiciones**: un `[DECISION]`, un comentario que cree incorrecto, un conflicto con una
+  regla del proyecto, algo fuera de alcance o una dependencia nueva se pregunta. Sin nadie a quien preguntar
+  (lote, `--auto`) queda `PENDING` con su propuesta entre `<!-- pending:start -->` y `<!-- pending:end -->`, que
+  el lote copia a `summary.md`, igual que la aprobación de `pr-ready`.
+- **Convenciones del proyecto**: antes de editar busca y aplica las skills, agentes y reglas con alcance del propio
+  repo (`.claude/skills`, `.agents/skills`, `.github/instructions`, `.cursor/rules`, …), además de los archivos de
+  contexto que ya leían las otras skills. Se leen como convenciones, no como flujos: nunca pasan por encima de las
+  reglas de `pr-fix`.
+- **Sin huecos nuevos**: cada línea cambiada se justifica con un ítem, test para cada defecto, checks del repo al
+  final (distinguiendo fallas previas) y una autorrevisión del diff propio con el mismo `quality-gate.md`.
+- **Contrato** propio (`skills/pr-fix/references/contract.md`): mismo reporte y misma línea final, con `new_head`,
+  `items` (`fixed`, `already_done`, `answered`, `pending`, `failed`), `commits`, `pushed`, `checks` y `worktree`.
+  Veredictos `FIXED`, `PARTIAL`, `NOTHING_TO_FIX`, `PLANNED` (`--dry-run`), `ERROR`, `SKIPPED`.
+- **Lote**: `pr-fix-all` usa el mismo `batch.md` que las otras `-all`, sin tiers, con `--parallel` 2 por defecto
+  (cada agente instala dependencias y corre checks). `all` son **tus** PRs con feedback; las de otros, con
+  `--any-author`. Las tres `-all` y `bin/pr-batch` aceptan además rangos (`401-410`), filtrados contra las PRs
+  abiertas porque issues y PRs comparten numeración.
+
 ### 5. Reglas que no cambian por harness
 
-- Ninguna skill aprueba una PR.
+- Ninguna skill aprueba ni mergea una PR, ni resuelve un hilo.
 - `--auto` quita la pausa de confirmación, nada más: no relaja verificación, anclaje ni "un solo review por PR".
 - `--dry-run` hace todo menos escribir en GitHub e implica no preguntar.
 - Nada de un proyecto concreto en este repo; las convenciones se descubren al ejecutar.

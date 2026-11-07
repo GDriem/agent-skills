@@ -281,6 +281,17 @@ what was tested in this repo is marked **probado**, the rest comes from the docs
 - **`--only`, probado**: `/orchestrate --only t3 --run-dir=<that run> --yes` relaunched only t3 (one `Agent`),
   took t1 from the earlier `summary.json`, left the t1 and t2 lines untouched and rewrote `summary.md`.
 
+## `pr-fix` and `pr-fix-all` (not tested yet)
+
+- Edits go through `Edit`/`MultiEdit` inside the worktree; the first edit outside the session's directory asks for
+  permission in an interactive session. `AskUserQuestion` covers the decision questions of Step 3.
+- Headless (`bin/pr-batch --skill pr-fix`): the runner adds `Edit,MultiEdit`, `--permission-mode acceptEdits`,
+  and `--add-dir` for the worktrees directory. The repository's check commands are not pre-approved: pass one
+  `--allow-tool` per tool the checks need (`"Bash(npm *)"`, `"Bash(dotnet *)"`, …); a denied check is recorded
+  as not run, never bypassed.
+- `pr-fix-all` with `Agent` or `Workflow`: the PR agents need the same tools; their worktrees are separate, so up
+  to `--parallel` can run at once.
+
 ## Headless (for `bin/pr-batch` and `bin/agent-batch`)
 
 Both runners start sessions through `headless_run` in `bin/lib/batch.sh`; `agent-batch` adds `Edit`,
