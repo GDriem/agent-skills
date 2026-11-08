@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # batch.sh: shared by bin/pr-batch and bin/agent-batch. Source it; it defines functions only.
 # bash 3.2 (macOS): no `wait -n`, no associative arrays, no mapfile. Arrays cannot be exported, so the
 # per-session settings travel in BATCH_* environment variables to the `--one` child processes.
@@ -47,6 +48,20 @@ abs_dir() { # <dir>: create it and print its absolute path
   mkdir -p "$1" && (cd "$1" && pwd)
 }
 
+# Denied in every claude session, on top of what BATCH_TOOLS allows (a deny always wins over an allow, including
+# --allow-tool): the skills' hard rules that would change shared history or decide for a person. Local
+# rewrites (commit --amend, reset --hard) stay allowed: pr-fix uses them on its own unpushed commits, and a
+# plain push of such a commit can only fast-forward. `*` matches any text, so `git *push*` also covers
+# `git -C <worktree> push …`; flags are matched with a leading space so a branch named `my-fix` is not a `-f`.
+# ` :**` (a `git push <remote> :<branch>` delete) ends in `**`, not `:*`: Claude Code reads a trailing `:*` as the
+# old prefix syntax and would match it literally. Checked against claude 2.1 with real sessions.
+GUARD_DENY='Bash(git *push*--force*),Bash(git *push* -f*),Bash(git *push* +*),Bash(git *push*--mirror*)'
+GUARD_DENY="$GUARD_DENY,Bash(git *push*--delete*),Bash(git *push* -d *),Bash(git *push* :**)"
+GUARD_DENY="$GUARD_DENY,Bash(git *push*:refs/heads/main),Bash(git *push*:refs/heads/master)"
+GUARD_DENY="$GUARD_DENY,Bash(git *--no-verify*)"
+GUARD_DENY="$GUARD_DENY,Bash(gh pr merge*),Bash(gh pr close*),Bash(gh pr review*--approve*),Bash(gh pr review* -a*)"
+GUARD_DENY="$GUARD_DENY,Bash(gh api*resolveReviewThread*),Bash(gh api*/merge*)"
+
 # One headless session; prints the last non-empty line of its final message (the last BATCH_LINES lines
 # when that is set), or nothing.
 #   headless_run <harness> <prompt> <raw file> <log file>
@@ -54,6 +69,7 @@ abs_dir() { # <dir>: create it and print its absolute path
 #   BATCH_MODEL       model for the session
 #   BATCH_EFFORT      low|medium|high (claude --effort, codex model_reasoning_effort)
 #   BATCH_TOOLS       claude --allowedTools value
+#   BATCH_DENY        claude --disallowedTools, added to GUARD_DENY
 #   BATCH_PERMISSION  claude --permission-mode value
 #   BATCH_ADD_DIRS    directories the session may write to, separated by ":"
 #   BATCH_WORKDIR     working directory of the session (default: the current one)
@@ -61,29 +77,30 @@ abs_dir() { # <dir>: create it and print its absolute path
 headless_run() {
   local harness=$1 prompt=$2 raw=$3 log=$4 dir old_ifs=$IFS
   local workdir=${BATCH_WORKDIR:-$PWD}
-  local dirs=()
+  local add_dirs=()
   IFS=:
-  for dir in ${BATCH_ADD_DIRS:-}; do [ -n "$dir" ] && dirs+=("--add-dir" "$dir"); done
+  for dir in ${BATCH_ADD_DIRS:-}; do [ -n "$dir" ] && add_dirs+=("--add-dir" "$dir"); done
   IFS=$old_ifs
 
   case "$harness" in
     claude)
-      local cmd=(claude -p "$prompt" --output-format json --allowedTools "$BATCH_TOOLS")
-      cmd+=(${dirs[@]+"${dirs[@]}"})
-      [ -n "${BATCH_PERMISSION:-}" ] && cmd+=(--permission-mode "$BATCH_PERMISSION")
-      [ -n "${BATCH_MODEL:-}" ] && cmd+=(--model "$BATCH_MODEL")
-      [ -n "${BATCH_EFFORT:-}" ] && cmd+=(--effort "$BATCH_EFFORT")
-      (cd "$workdir" && "${cmd[@]}") < /dev/null > "$raw" 2> "$log" || true
+      local argv=(claude -p "$prompt" --output-format json --allowedTools "$BATCH_TOOLS"
+        --disallowedTools "$GUARD_DENY${BATCH_DENY:+,$BATCH_DENY}")
+      argv+=(${add_dirs[@]+"${add_dirs[@]}"})
+      [ -n "${BATCH_PERMISSION:-}" ] && argv+=(--permission-mode "$BATCH_PERMISSION")
+      [ -n "${BATCH_MODEL:-}" ] && argv+=(--model "$BATCH_MODEL")
+      [ -n "${BATCH_EFFORT:-}" ] && argv+=(--effort "$BATCH_EFFORT")
+      (cd "$workdir" && "${argv[@]}") < /dev/null > "$raw" 2> "$log" || true
       jq -r '.result // empty' "$raw" 2>/dev/null | last_lines "${BATCH_LINES:-1}" || true
       ;;
     codex)
-      local cmd=(codex exec -C "$workdir" --skip-git-repo-check -s workspace-write -c approval_policy=never
+      local argv=(codex exec -C "$workdir" --skip-git-repo-check -s workspace-write -c approval_policy=never
         -c sandbox_workspace_write.network_access=true -o "$raw")
-      cmd+=(${dirs[@]+"${dirs[@]}"})
-      [ -n "${BATCH_MODEL:-}" ] && cmd+=(-m "$BATCH_MODEL")
-      [ -n "${BATCH_EFFORT:-}" ] && cmd+=(-c "model_reasoning_effort=$BATCH_EFFORT")
-      cmd+=("$prompt")
-      "${cmd[@]}" < /dev/null > "$log" 2>&1 || true
+      argv+=(${add_dirs[@]+"${add_dirs[@]}"})
+      [ -n "${BATCH_MODEL:-}" ] && argv+=(-m "$BATCH_MODEL")
+      [ -n "${BATCH_EFFORT:-}" ] && argv+=(-c "model_reasoning_effort=$BATCH_EFFORT")
+      argv+=("$prompt")
+      "${argv[@]}" < /dev/null > "$log" 2>&1 || true
       last_lines "${BATCH_LINES:-1}" < "$raw" 2>/dev/null || true
       ;;
   esac

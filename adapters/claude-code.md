@@ -281,8 +281,14 @@ what was tested in this repo is marked **probado**, the rest comes from the docs
 - **`--only`, probado**: `/orchestrate --only t3 --run-dir=<that run> --yes` relaunched only t3 (one `Agent`),
   took t1 from the earlier `summary.json`, left the t1 and t2 lines untouched and rewrote `summary.md`.
 
-## `pr-fix` and `pr-fix-all` (not tested yet)
+## `pr-fix` and `pr-fix-all`
 
+- **`pr-fix` interactive, probado** (2026-11-07, a real PR with two review threads, one of them a decision):
+  `pr-review` → `pr-fix` → `pr-ready`. It applied the project's `CLAUDE.md` and backend skill, asked the decision
+  with `AskUserQuestion`, made one commit per item with no AI attribution and the thread link in the body, ran
+  lint, typecheck and the touched tests in the worktree, pushed fast-forward, replied in both threads without
+  resolving them and removed the worktree. `pr-ready` then returned `READY` with both threads `ATENDIDO`.
+  Not tested yet: `--dry-run`, `--no-push`, headless and `pr-fix-all`.
 - Edits go through `Edit`/`MultiEdit` inside the worktree; the first edit outside the session's directory asks for
   permission in an interactive session. `AskUserQuestion` covers the decision questions of Step 3.
 - Headless (`bin/pr-batch --skill pr-fix`): the runner adds `Edit,MultiEdit`, `--permission-mode acceptEdits`,
@@ -291,6 +297,20 @@ what was tested in this repo is marked **probado**, the rest comes from the docs
   as not run, never bypassed.
 - `pr-fix-all` with `Agent` or `Workflow`: the PR agents need the same tools; their worktrees are separate, so up
   to `--parallel` can run at once.
+- Interactive sessions and the `-all` skills under `Agent` or `Workflow` do not go through `bin/pr-batch`, so they
+  only get the guard rails you configure. The same list as `permissions.deny` in `~/.claude/settings.json`:
+
+  ```json
+  { "permissions": { "deny": [
+    "Bash(git *push*--force*)", "Bash(git *push* -f*)", "Bash(git *push* +*)", "Bash(git *push*--mirror*)",
+    "Bash(git *push*--delete*)", "Bash(git *push* -d *)", "Bash(git *push* :**)",
+    "Bash(git *push*:refs/heads/main)", "Bash(git *push*:refs/heads/master)", "Bash(git *--no-verify*)",
+    "Bash(gh pr merge*)", "Bash(gh pr close*)", "Bash(gh pr review*--approve*)", "Bash(gh pr review* -a*)",
+    "Bash(gh api*resolveReviewThread*)", "Bash(gh api*/merge*)"
+  ] } }
+  ```
+
+  It applies to everything you do in Claude Code, not only to these skills: drop the entries you use yourself.
 
 ## Headless (for `bin/pr-batch` and `bin/agent-batch`)
 
@@ -301,11 +321,20 @@ tier (`haiku`/`opus`) unless `--model` was given.
 ```bash
 AGENT_SKILLS_RUNS="$RUNS" claude -p "/pr-review owner/repo#401 --auto --run-dir=$RUN_DIR" \
   --output-format json --add-dir "$TMPDIR" \
-  --allowedTools "Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm *),Read,Write,Glob,Grep" \
+  --allowedTools "Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm $TMPDIR/*),Read,Write,Glob,Grep" \
+  --disallowedTools "$GUARD_DENY" \
   < /dev/null > "$WORK/pr-401.claude.json" 2> "$WORK/pr-401.claude.err"
 jq -r '.result' "$WORK/pr-401.claude.json" | tail -n 1     # the contract line
 ```
 
+- **Guard rails.** Every session also gets `--disallowedTools` with `GUARD_DENY` from `bin/lib/batch.sh`: force,
+  `+refspec`, `--mirror` and delete pushes, pushes to `main`/`master`, `--no-verify`, `gh pr merge`/`close`,
+  `gh pr review --approve` and resolving threads through `gh api`. A deny wins over any allow, including
+  `--allow-tool`. `rm` is allowed only under `$TMPDIR` (the skills' payload files), and `agent-batch` also denies
+  every `git push`. **Probado** (claude 2.1.311, real sessions on a throwaway repository): every denied form was
+  refused, and a plain push to a branch named `my-fix`, a local `commit --amend` and `rm` of a `mktemp` file
+  went through. A trailing `:*` in a pattern is the old prefix syntax and is matched literally, so the
+  `git push <remote> :<branch>` rule is written ` :**`.
 - `/pr-review` inside the `-p` prompt expands the skill (**probado**).
 - `bin/pr-batch --harness claude --dry-run <n>` on a real PR after the move to `bin/lib/batch.sh`
   (**probado**): contract line parsed, `posted:false`, `summary.json`/`summary.md` written, exit 0.

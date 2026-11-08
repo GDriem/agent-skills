@@ -11,7 +11,7 @@ aparte con su propio contexto**, así que la décima PR se revisa con el context
 
 | Harness | Estado |
 |---|---|
-| Claude Code | **Probado**: las cinco skills de `v0.2.0` (también headless con `claude -p`), `bin/pr-batch`, `bin/agent-batch` e `install.sh`. `pr-fix` y `pr-fix-all`: escritas, **sin probar todavía** |
+| Claude Code | **Probado**: las cinco skills de `v0.2.0` (también headless con `claude -p`), `bin/pr-batch`, `bin/agent-batch` e `install.sh`. `pr-fix` interactiva: **probada** con un push real y una ronda completa `pr-review` → `pr-fix` → `pr-ready`. `pr-fix-all` y `pr-fix` headless: sin probar |
 | Codex | **Probado**: lo mismo, con `codex exec`. `pr-fix` y `pr-fix-all`: sin probar |
 | GitHub Copilot (CLI y VS Code), Gemini CLI, Cursor | Documentado, pendiente: la instalación los contempla, pero nada se probó y los runners todavía no los soportan |
 
@@ -19,9 +19,8 @@ Qué se probó y cómo, en [`adapters/`](adapters) (lo marcado **probado**).
 
 Pendiente, sin fecha:
 
-- `pr-fix` y `pr-fix-all`: probarlas en Claude Code y Codex (interactivo, `--dry-run`, `--no-push`, un push real a
-  una PR de prueba y `bin/pr-batch --skill pr-fix`) antes de marcarlas probadas.
-
+- `pr-fix`: probar `--dry-run`, `--no-push` y `bin/pr-batch --skill pr-fix` en Claude Code, y todo en Codex.
+  `pr-fix-all`: probarla en los dos.
 - Copilot, Gemini y Cursor: probarlos, sumarlos a `bin/pr-batch` y `bin/agent-batch` y escribir sus adapters. Lo
   que falta confirmar de cada uno está en [docs/harness-matrix.md](docs/harness-matrix.md).
 - Correr el orquestador de las `-all` en un modelo más barato: con el tier por tamaño, en Claude Code es la mayor
@@ -127,21 +126,19 @@ simple sobre el head de la PR: si la rama se movió, no empuja y deja el worktre
 que cree incorrecto, algo fuera de alcance o una dependencia nueva siempre te lo pregunta; en lote (o con
 `--auto`) queda pendiente con su propuesta.
 
+Las reglas duras (nunca force-push, nunca `--no-verify`, nunca merge ni aprobar) están en la skill, y en Claude
+Code headless además las impone el harness: `bin/pr-batch` y `bin/agent-batch` lanzan cada sesión con
+`--disallowedTools` (lista en `bin/lib/batch.sh`) y solo permiten `rm` bajo `$TMPDIR`. Para el uso interactivo,
+la misma lista va en `permissions.deny` de `~/.claude/settings.json`
+([adapters/claude-code.md](adapters/claude-code.md#pr-fix-and-pr-fix-all)). Codex no tiene lista de denegación:
+ahí, y como defensa para cualquier harness, conviene un ruleset de GitHub que bloquee force push y borrado de ramas.
+
 Sin `--dry-run`, una `-all` pide confirmación una sola vez para todo el lote (cada agente corre con `--auto`
 y publica). `--parallel 1` corre las PRs una detrás de otra.
 
-**Tier por tamaño (`pr-review-all` y `bin/pr-batch --skill pr-review`).** Con las rutas y los conteos de cada PR,
-sin leer el diff, el lote las separa en tres clases:
-
-| Clase | Cuándo | Cómo corre |
-|---|---|---|
-| trivial | ≤ 20 líneas y ≤ 3 archivos | de a cinco por agente, en serie, tier budget, `--light` |
-| small | ≤ 100 líneas y ≤ 8 archivos | un agente por PR, tier budget, `--light` |
-| normal | el resto, o cualquier ruta que suene sensible (auth, permisos, secretos, migraciones, pagos, CI, despliegue) | como siempre |
-
-Tier budget: `haiku` en Claude Code y esfuerzo de razonamiento bajo en Codex (o `--small-model`). Si la pasada
-ligera ve un posible bloqueante, algo sensible o algo que no puede verificar, no publica nada y el lote revisa esa
-PR de nuevo, completa. `summary.md` muestra la clase de cada PR y por qué escaló. `pr-ready-all` no usa clases.
+`pr-review-all` separa las PRs por tamaño: las triviales y chicas van a un modelo barato con `--light` y escalan a
+una revisión completa si ven algo serio (con dos PRs chicas, el lote bajó de 1,71 a 0,65 USD en Claude Code). Cómo
+funcionan las `-all`, el tier por tamaño, el costo y `bin/agent-batch`, en [docs/batch.md](docs/batch.md).
 
 ### `bin/pr-batch`
 
@@ -173,57 +170,28 @@ orchestrate --only t3,t5 --run-dir=<dir>   # re-lanza esas tareas de un run ante
 Cada tarea corre en un agente nuevo y termina con una línea de JSON (`status`, `summary` ≤ 60 palabras,
 `files_changed`, `artifacts`); lo largo queda en `<run-dir>/orchestrate-<id>.md`. El orquestador no lee código ni
 diffs. En vez de nombres de modelo, el grafo usa `tier: small|default|large`, y cada adapter lo traduce (Claude
-Code a modelo, Codex a esfuerzo de razonamiento).
+Code a modelo, Codex a esfuerzo de razonamiento). Sin subagentes, `bin/agent-batch` corre el mismo grafo con una
+sesión headless por tarea ([docs/batch.md](docs/batch.md#binagent-batch)).
 
-### `bin/agent-batch`
-
-`orchestrate` sin subagentes: una sesión headless por tarea, en olas según las dependencias. Lo usa la skill como
-respaldo y sirve desde cron o CI.
+## Desarrollo
 
 ```bash
-bin/agent-batch --harness codex --tasks graph.json --dry-run       # olas y prompts, sin lanzar nada
-bin/agent-batch --harness claude --task "auditar a" --task "auditar b" --wave --task "unir las dos auditorías" --yes
-bin/agent-batch --harness claude --tasks graph.json --commit --verify "build=npm run build" --allow-tool "Bash(npm *)" --yes
-bin/agent-batch --harness codex --retry-failed ~/.agent-skills/runs/2026-11-02T10-00-orchestrate
+tests/run.sh                        # tests de los runners e install.sh, con gh y claude falsos (sin red ni modelo)
+tests/run.sh prb_                   # solo los que contienen "prb_"
+scripts/lint-skills.sh              # frontmatter y referencias de cada SKILL.md
+scripts/sync-references.sh          # copia shared/references/ a las skills que las usan (--check solo verifica)
+shellcheck -x install.sh bin/pr-batch bin/agent-batch bin/lib/batch.sh scripts/*.sh tests/run.sh tests/fakes/*
 ```
 
-`--tasks` toma el `graph.json` que escribe la skill. Con `--task`, cada `--wave` corta una ola: las tareas
-siguientes dependen de todas las de la ola anterior. Deja `graph.json`, `summary.json` y `summary.md` en el run dir
-y sale con código 1 si alguna tarea no terminó `ok`. Comparte con `pr-batch` el arranque de sesiones
-(`bin/lib/batch.sh`).
+El CI (`.github/workflows/ci.yml`) corre todo eso en cada push y PR, con los tests en Ubuntu y en macOS (bash 3.2).
 
-### Cómo funcionan las versiones `-all`
+Las referencias que usan varias skills (`batch.md`, `quality-gate.md`, `comment-templates.md`, `posting.md` y el
+contrato de `pr-review`/`pr-ready`) se editan en `shared/references/` y se copian con
+`scripts/sync-references.sh`. Cada skill lleva su copia porque se instala sola, con su propio symlink.
 
-El agente principal solo lista las PRs y lanza un agente nuevo por cada una. Ese agente sigue la skill de una
-PR completa y termina con un resultado corto y fijo, una línea de JSON (contrato completo en
-[ADR-0001](docs/adr/0001-fuente-unica.md)):
-
-```json
-{ "skill": "pr-review", "repo": "owner/repo", "pr": 401, "verdict": "REQUEST_CHANGES", "max_priority": "P1",
-  "findings": { "blocking": 2, "suggestion": 3, "decision": 0 }, "posted": true,
-  "report": "~/.agent-skills/runs/2026-11-02T10-00/pr-review-401.md", "summary": "≤ 60 palabras" }
-```
-
-El reporte completo se queda en `~/.agent-skills/runs/<fecha>/<skill>-<n>.md` (o bajo `$AGENT_SKILLS_RUNS`), nunca
-dentro del repo revisado. El agente principal nunca ve diffs ni archivos de otra PR, solo esas líneas. Al final
-escribe `summary.json` (las líneas de todas las PRs) y `summary.md` (la tabla) en el mismo directorio que los
-reportes. Cómo se
-lanza cada agente depende del harness:
-
-| Harness | Un agente por PR con | Estado |
-|---|---|---|
-| Claude Code | herramienta `Workflow` (o `Agent`) | probado |
-| Codex | `multi_agent` nativo, con `codex exec` por PR como respaldo | probado |
-| Copilot CLI y Cursor | subagentes nativos (`/fleet` en Copilot, Task en Cursor) | documentado, pendiente |
-| Gemini CLI y Copilot en VS Code | el runner universal, hasta confirmar que sus subagentes corren en paralelo | documentado, pendiente |
-| Claude Code y Codex | `bin/pr-batch --harness claude\|codex`, que lanza una sesión headless por PR (`claude -p`, `codex exec`) | probado |
-
-**Costo.** Un agente por PR arranca de cero, así que sin más trabajo las PRs chicas pagan como las grandes. El tier
-por tamaño lo corrige: con dos PRs chicas, el lote bajó de 1,71 a 0,65 USD en Claude Code y un 44 % de tokens en
-Codex, sin cambiar los veredictos. Lo que se mantiene es que el contexto del agente principal no crece con cada
-PR, que las PRs corren en paralelo y que una PR no contamina a la otra. Lo mismo
-vale para `orchestrate`: su orquestador tiene un costo fijo que solo compensa con tareas grandes o que
-conviene aislar. Números en [docs/token-cost.md](docs/token-cost.md).
+`HOME=<otro dir> ./install.sh` aísla los symlinks, pero no los `agents/openai.yaml` de Codex, que se generan dentro
+del checkout: un `--uninstall` de prueba con otro `HOME` los borra también para tu instalación real (se recuperan
+con `./install.sh --harness codex`). Los tests instalan sobre una copia del checkout por eso.
 
 ## Estructura
 
@@ -235,5 +203,8 @@ bin/pr-batch                 runner universal: una sesión headless por PR
 bin/agent-batch              runner universal de orchestrate: una sesión headless por tarea, en olas
 bin/lib/batch.sh             lo que comparten los dos runners (arranque headless por harness, run dir)
 install.sh                   instala en cada harness, detecta drift y retira copias viejas con backup
-docs/                        matriz de capacidades por harness, costo medido y ADRs
+shared/references/           fuente de las referencias que comparten varias skills
+scripts/                     sync-references.sh y lint-skills.sh
+tests/                       tests/run.sh y los gh y claude falsos que usa
+docs/                        cómo corren los lotes, matriz de capacidades por harness, costo medido y ADRs
 ```

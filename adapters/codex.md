@@ -90,6 +90,10 @@ skills with `--ephemeral`.
   ask the first time a command writes outside the workspace.
 - `spawn_agent` children inherit the sandbox; each one creates its own worktree, so up to `--parallel` can run at
   once.
+- **No tool-level deny list.** `codex exec` has no equivalent of Claude Code's `--disallowedTools`, so the rule
+  against force pushes, `--no-verify`, merging or approving lives only in the skill's instructions. The guard
+  that covers every harness is on GitHub: a branch ruleset (or branch protection) that blocks force pushes and
+  deletions on the PR branches and requires review on the default branch.
 
 ## Headless (for `bin/pr-batch` and `bin/agent-batch`)
 

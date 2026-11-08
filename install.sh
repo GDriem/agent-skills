@@ -118,7 +118,8 @@ short_description() {
 
 # Codex: skills that launch a fleet of agents (the batch skills, orchestrate) only run when called by name.
 openai_yaml() {
-  local n=$1 implicit=true prompt="Use \$$n on the pull request."
+  local n=$1
+  local implicit=true prompt="Use \$$n on the pull request."
   case "$n" in
     *-all) implicit=false prompt="Use \$$n on the open pull requests." ;;
     orchestrate) implicit=false prompt="Use \$$n to split these tasks across fresh agents." ;;
@@ -153,6 +154,7 @@ BACKUP="$BACKUP_ROOT/$STAMP"
 DRY=1 changes=0
 
 say() { printf '  %-9s %s\n' "$1" "$2"; changes=$((changes + 1)); }
+# shellcheck disable=SC2088 # a literal ~ for display, never expanded
 short() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
 exists() { [ -e "$1" ] || [ -L "$1" ]; }
 ours() { [ -L "$1" ] && [ "$(readlink "$1")" = "$SRC/skills/$2" ]; }
@@ -207,7 +209,7 @@ conflicts() {
 }
 
 do_install() {
-  local n d row path who why
+  local n d h path who why
   for n in $skills; do
     for d in $dests; do link "$d" "$n"; done
     if has codex; then generate "$SRC/skills/$n/agents/openai.yaml" "$(openai_yaml "$n")"; fi
@@ -242,9 +244,13 @@ do_uninstall() {
 
   # Restore, newest backup first, every backed-up path that is free again and belongs to the selection.
   [ -d "$BACKUP_ROOT" ] || return 0
+  # Backup dirs are timestamps under our control (no spaces), so word splitting is safe here.
+  # shellcheck disable=SC2012
   for bdir in $(ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null | sort -r); do
     manifest="$bdir/manifest.tsv"
     [ -f "$manifest" ] || continue
+    # The loop keeps reading the original manifest through its open descriptor while awk + mv replace it.
+    # shellcheck disable=SC2094
     while IFS="$(printf '\t')" read -r path rest; do
       case "$rest" in *$'\t'restored) continue ;; esac
       case "$restored" in *"|$path|"*) continue ;; esac
