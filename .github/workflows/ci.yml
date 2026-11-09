@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x install.sh bin/pr-batch bin/agent-batch bin/lib/batch.sh scripts/*.sh tests/run.sh tests/fakes/*
+      - name: Skill frontmatter and references
+        run: scripts/lint-skills.sh
+      - name: Shared references in sync
+        run: scripts/sync-references.sh --check
+
+  test:
+    # macOS runs the bash 3.2 the scripts promise to support; Ubuntu runs a current bash.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests
+        run: /bin/bash tests/run.sh

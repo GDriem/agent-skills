@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Fake gh for tests/run.sh. PRs are fixtures in $FAKE_DIR/pr-<n>.json with the fields the runners ask for
+# (number, state, isDraft, additions, deletions, changedFiles, files, author, reviewDecision, reviews,
+# statusCheckRollup). Every call is appended to $FAKE_DIR/gh.log.
+set -euo pipefail
+echo "gh $*" >> "$FAKE_DIR/gh.log"
+
+jq_filter() { # value of --jq / -q, or "."
+  local q=. prev=""
+  for a in "$@"; do
+    case "$prev" in --jq|-q) q=$a ;; esac
+    prev=$a
+  done
+  printf '%s' "$q"
+}
+
+case "$1 $2" in
+  "repo view") echo "${FAKE_REPO:-owner/repo}" ;;
+  "api user") echo "${FAKE_LOGIN:-me}" ;;
+  "pr view")
+    f="$FAKE_DIR/pr-$3.json"
+    [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; }
+    jq -r "$(jq_filter "$@")" "$f" ;;
+  "pr list")
+    jq -s '[.[] | select(.state == "OPEN")]' "$FAKE_DIR"/pr-*.json ;;
+  *) echo "fake gh: unsupported: $*" >&2; exit 1 ;;
+esac

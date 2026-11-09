@@ -13,6 +13,7 @@ while [ -L "$src" ]; do
   link=$(readlink "$src")
   case "$link" in /*) src=$link ;; *) src=$(dirname "$src")/$link ;; esac
 done
+# shellcheck source-path=SCRIPTDIR source=lib/batch.sh
 . "$(cd "$(dirname "$src")" && pwd -P)/lib/batch.sh"
 
 usage() {
@@ -48,12 +49,13 @@ EOF
 # ---------------------------------------------------------------------------------------------------
 # Shared pieces
 
-# The task prompt of skills/orchestrate/references/contract.md, for task <id>, with the lines in <done>.
+# The task prompt of skills/orchestrate/references/contract.md, for task <id>, with the lines in <finished>.
+# shellcheck disable=SC2016 # jq variables, not shell ones
 PROMPT_JQ='
   def kind_of: if $ro then "read" else (.kind // "write") end;
   def fence: if (.files // []) | length > 0 then .files | join(", ") else "the scope described above" end;
   (.tasks[] | select(.id == $id)) as $t
-  | ($done | map({key: .task, value: .}) | from_entries) as $by
+  | ($finished | map({key: .task, value: .}) | from_entries) as $by
   | [($t.deps // [])[] | select($by[.] != null) | $by[.]
       | "- [\(.task)] \(.summary)"
         + (if (.artifacts // []) | length > 0 then " · artifacts: \(.artifacts | join(", "))" else "" end)] as $ctx
@@ -99,7 +101,7 @@ run_one() {
   tier=$(jq -r '.tier // "default"' <<<"$task")
   effort=$(jq -r '.effort // empty' <<<"$task")
   prompt=$(jq -r --arg id "$id" --arg run_dir "$AB_RUN_DIR" --argjson ro "$AB_RO" \
-    --argjson done "$(cat "$AB_WORK/done.json")" "$PROMPT_JQ" "$AB_GRAPH")
+    --argjson finished "$(cat "$AB_WORK/done.json")" "$PROMPT_JQ" "$AB_GRAPH")
 
   # Tiers (adapters/<harness>.md): claude picks a model, codex a reasoning effort. --model wins.
   model=$AB_MODEL
@@ -115,7 +117,9 @@ run_one() {
   if [ "$kind" = write ]; then tools="$tools,Edit,MultiEdit"; permission=acceptEdits; fi
   [ -z "$AB_ALLOW" ] || tools="$tools,$AB_ALLOW"
 
-  line=$(BATCH_MODEL=$model BATCH_EFFORT=$effort BATCH_TOOLS=$tools BATCH_PERMISSION=$permission \
+  # Task agents never push (the contract says so); --commit commits are made by this runner, not by them.
+  line=$(BATCH_MODEL=$model BATCH_EFFORT=$effort BATCH_TOOLS=$tools BATCH_DENY='Bash(git *push*)' \
+    BATCH_PERMISSION=$permission \
     BATCH_ADD_DIRS="$AB_RUN_DIR" BATCH_WORKDIR="$AB_ROOT" headless_run "$AB_HARNESS" "$prompt" "$raw" "$log")
 
   if line=$(jq -ce --arg id "$id" --arg kind "$kind" '
@@ -151,7 +155,7 @@ while [ $# -gt 0 ]; do
     --task) free+=("$wave"$'\t'"${2:-}"); shift 2 ;;
     --task=*) free+=("$wave"$'\t'"${1#*=}"); shift ;;
     --task-file|--task-file=*)
-      f=${2:-}; [ "$1" = --task-file ] && shift 2 || { f=${1#*=}; shift; }
+      if [ "$1" = --task-file ]; then f=${2:-}; shift; [ $# -eq 0 ] || shift; else f=${1#*=}; shift; fi
       [ -f "$f" ] || die "no such task file: $f"
       free+=("$wave"$'\t'"$(cat "$f")") ;;
     --wave) wave=$((wave + 1)); shift ;;
@@ -270,12 +274,12 @@ echo "  parallel $parallel, model ${model:-by tier}, root $root, run dir $run_di
 # Ready and blocked tasks among the selected ones without a line, given the lines in <done map>.
 #   prints "ready<TAB>id<TAB>kind" or "blocked<TAB>id<TAB>dep,dep"
 next_wave() { # <done map: {"id":"status"}>
-  jq -r --argjson done "$1" --argjson sel "$selected" --argjson ro "$AB_RO" '
+  jq -r --argjson finished "$1" --argjson sel "$selected" --argjson ro "$AB_RO" '
     (.tasks | map(.id)) as $ids
-    | .tasks[] | select(.id as $i | ($sel | index($i)) and ($done[$i] == null))
+    | .tasks[] | select(.id as $i | ($sel | index($i)) and ($finished[$i] == null))
     | [(.deps // [])[] | select(. as $d | $ids | index($d))] as $deps
-    | select(all($deps[]; $done[.] != null))
-    | [$deps[] | select($done[.] != "ok")] as $bad
+    | select(all($deps[]; $finished[.] != null))
+    | [$deps[] | select($finished[.] != "ok")] as $bad
     | if ($bad | length) > 0 then "blocked\t\(.id)\t\($bad | join(","))"
       else "ready\t\(.id)\t\(if $ro then "read" else (.kind // "write") end)" end' "$graph"
 }
@@ -294,13 +298,13 @@ if [ "$dry" = 1 ]; then
       echo "  $id ($extra) $(jq -r --arg id "$id" '.tasks[] | select(.id == $id) | .title // ""' "$graph")"
       if [ "$n" = 1 ]; then
         echo '[]' > "$work/done.json"
-        jq -r --arg id "$id" --arg run_dir "$run_dir" --argjson ro "$AB_RO" --argjson done '[]' "$PROMPT_JQ" "$graph" |
+        jq -r --arg id "$id" --arg run_dir "$run_dir" --argjson ro "$AB_RO" --argjson finished '[]' "$PROMPT_JQ" "$graph" |
           sed 's/^/    | /'
       fi
       sim=$(jq -c --arg id "$id" '.[$id] = "ok"' <<<"$sim")
     done <<<"$rows"
   done
-  left=$(jq -r --argjson done "$sim" --argjson sel "$selected" '[$sel[] | select($done[.] == null)] | join(", ")' "$graph")
+  left=$(jq -r --argjson finished "$sim" --argjson sel "$selected" '[$sel[] | select($finished[.] == null)] | join(", ")' "$graph")
   [ -z "$left" ] || echo "Dependency cycle, would be blocked: $left"
   rm -rf "$work"
   jq -cn --arg run_dir "$run_dir" --arg graph "$graph" --argjson total "$total" \
@@ -345,7 +349,7 @@ status_map() { done_lines | jq -c 'map({key: .task, value: .status}) | from_entr
 while :; do
   rows=$(next_wave "$(status_map)")
   if [ -z "$rows" ]; then
-    left=$(jq -r --argjson done "$(status_map)" --argjson sel "$selected" '$sel[] | select($done[.] == null)' "$graph")
+    left=$(jq -r --argjson finished "$(status_map)" --argjson sel "$selected" '$sel[] | select($finished[.] == null)' "$graph")
     for id in $left; do
       synth_line "$id" blocked "dependency cycle" "Not run: dependency cycle." > "$work/line-$id.json"
     done
@@ -444,8 +448,10 @@ summary_md="$run_dir/summary.md"
     jq -r '.verify.checks[] | "- \(.label): \(if .passed then "pass" else "FAIL: \(.error)" end)"' "$summary_json"
   fi
   arts=$(jq -r '.tasks[] | .artifacts[]' "$summary_json")
+  # shellcheck disable=SC2001 # prefix every line, not just the first
   [ -z "$arts" ] || { echo; echo "## Artifacts"; echo; echo "$arts" | sed 's/^/- /'; }
   pend=$(jq -r '.tasks[] | .follow_ups[]' "$summary_json")
+  # shellcheck disable=SC2001
   [ -z "$pend" ] || { echo; echo "## Pending"; echo; echo "$pend" | sed 's/^/- /'; }
   if [ -n "$failed" ]; then
     echo; echo "## Retry"; echo

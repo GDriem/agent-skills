@@ -12,6 +12,7 @@ while [ -L "$src" ]; do
   link=$(readlink "$src")
   case "$link" in /*) src=$link ;; *) src=$(dirname "$src")/$link ;; esac
 done
+# shellcheck source-path=SCRIPTDIR source=lib/batch.sh
 . "$(cd "$(dirname "$src")" && pwd -P)/lib/batch.sh"
 SRC_ROOT=$(cd "$(dirname "$src")/.." && pwd -P)
 
@@ -74,7 +75,7 @@ synth_line() { # <pr> <verdict> <error> <summary>
 # Internal mode: one unit, "<class>:<n>[,<n>…]". Called by xargs with the configuration in PRB_* variables.
 # normal and small are one PR; trivial is a group of PRs reviewed in series by one budget session.
 run_unit() {
-  local unit=$1 class=${1%%:*} list=${1#*:} n state open=() line raw log prompt args i
+  local class=${1%%:*} list=${1#*:} n state open=() line raw log prompt
   for n in ${list//,/ }; do
     local out="$PRB_WORK/line-$n.json"
     [ -f "$PRB_WORK/tier-$n" ] || echo "$class" > "$PRB_WORK/tier-$n"   # an escalation keeps the first class
@@ -117,7 +118,8 @@ $PRB_SKILL $PRB_REPO#$n $tail"; done
 Finish one PR before starting the next, and never carry a finding or an assumption from one PR to another.
 Nobody can answer questions in this session. Your final message must end with the result line of each PR, in the order above, one per line, with nothing after the last one."
   fi
-  local tools='Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm *),Read,Write,Glob,Grep'
+  # rm only for the skills' own temporary payload files, not anywhere in the repository.
+  local tools="Bash(gh *),Bash(git *),Bash(jq *),Bash(mkdir *),Bash(date *),Bash(printenv *),Bash(mktemp *),Bash(rm ${PRB_TMP%/}/*),Read,Write,Glob,Grep"
   local dirs="$PRB_RUN_DIR:$PRB_TMP" permission=""
   if [ "$PRB_SKILL" = pr-fix ]; then   # edits in its own worktree and runs the repository's checks there
     tools="$tools,Edit,MultiEdit${PRB_ALLOW:+,$PRB_ALLOW}"
@@ -197,6 +199,7 @@ if [ -n "$retry" ]; then
   run_dir=$retry
   [ -n "$repo" ] || repo=$(jq -r 'map(.repo) | first // empty' "$retry/summary.json")
   [ -n "$skill" ] || skill=$(jq -r 'map(.skill) | first // empty' "$retry/summary.json")
+  # shellcheck disable=SC2207 # PR numbers only; bash 3.2 has no mapfile
   tokens=($(jq -r '.[] | select(.verdict == "ERROR") | .pr' "$retry/summary.json"))
   if [ ${#tokens[@]} -eq 0 ]; then
     echo "No PR with verdict ERROR in $retry/summary.json; nothing to retry."
@@ -282,6 +285,7 @@ if [ ${#ranges[@]} -gt 0 ]; then
 fi
 if [ "$list_all" = 1 ]; then
   [ ${#prs[@]} -eq 0 ] || die "give PR numbers or 'all', not both"
+  # shellcheck disable=SC2207 # PR numbers only; bash 3.2 has no mapfile
   prs=($(open_prs all))
   [ ${#prs[@]} -lt 1000 ] || echo "warning: 1000 PRs listed; the list may be truncated" >&2
 fi
@@ -290,6 +294,7 @@ if [ ${#prs[@]} -eq 0 ]; then
   exit 0
 fi
 
+# shellcheck disable=SC2119 # no suffix for PR batches
 [ -n "$run_dir" ] || run_dir=$(default_run_dir)
 run_dir=$(abs_dir "$run_dir")
 
@@ -352,6 +357,7 @@ printf '%s\n' "${units[@]}" | xargs -P "$parallel" -I{} "$SELF" --one {} || true
 # Escalations: a light run that asked for a full review gets one, once (a full run cannot escalate).
 escalated=()
 for n in "${prs[@]}"; do
+  # shellcheck disable=SC2015 # skip unless the line exists and asks to escalate
   [ -s "$work/line-$n.json" ] && jq -e '.escalate == true' "$work/line-$n.json" >/dev/null 2>&1 || continue
   cp "$work/line-$n.json" "$work/light-$n.json"
   escalated+=("$n")

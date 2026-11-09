@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Fake `claude -p` for tests/run.sh. Saves each prompt and its flags under $FAKE_DIR/calls/ and answers with
+# the result lines the prompt asks for, in `--output-format json` shape ({"result": "..."}).
+#   PR skills:   one line per "<owner>/<repo>#<n>" in the prompt. $FAKE_DIR/noresult-<n> drops that line;
+#                $FAKE_DIR/escalate-<n> makes a --light run ask for a full review.
+#   orchestrate: one line for the task id in the prompt's contract line; $FAKE_DIR/fail-<id> makes it fail
+#                and $FAKE_DIR/files-<id> (one path per line) fills files_changed.
+set -euo pipefail
+
+prompt="" flags=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) prompt=$2; shift 2 ;;
+    *) flags="$flags $1"; shift ;;
+  esac
+done
+
+mkdir -p "$FAKE_DIR/calls"
+call=$(mktemp "$FAKE_DIR/calls/call.XXXXXX")   # sessions run in parallel: unique names, no counter
+printf '%s\n' "$prompt" > "$call.prompt"
+printf '%s\n' "$flags" > "$call.flags"
+
+lines=""
+add() { lines="${lines:+$lines
+}$1"; }
+
+if task=$(printf '%s\n' "$prompt" | grep -o '"skill":"orchestrate","task":"[^"]*"' | head -n 1); then
+  id=${task##*\"task\":\"}; id=${id%\"}
+  files='[]'
+  [ -f "$FAKE_DIR/files-$id" ] && files=$(jq -R . "$FAKE_DIR/files-$id" | jq -sc .)
+  if [ -f "$FAKE_DIR/fail-$id" ]; then
+    add "$(jq -cn --arg id "$id" '{skill:"orchestrate",task:$id,status:"failed",summary:"could not",files_changed:[],artifacts:[],follow_ups:[],error:"fake failure"}')"
+  else
+    add "$(jq -cn --arg id "$id" --argjson files "$files" '{skill:"orchestrate",task:$id,status:"ok",summary:"done",files_changed:$files,artifacts:[],follow_ups:[],error:null}')"
+  fi
+else
+  skill=$(printf '%s\n' "$prompt" | grep -o 'pr-[a-z]*' | head -n 1)
+  light=false
+  case "$prompt" in *--light*) light=true ;; esac
+  for n in $(printf '%s\n' "$prompt" | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' | sed 's/.*#//'); do
+    [ -f "$FAKE_DIR/noresult-$n" ] && continue
+    esc=false
+    [ "$light" = true ] && [ -f "$FAKE_DIR/escalate-$n" ] && esc=true
+    add "$(jq -cn --arg skill "$skill" --argjson pr "$n" --argjson esc "$esc" \
+      '{skill:$skill,repo:"owner/repo",pr:$pr,head:"abc1234",verdict:"COMMENT",max_priority:null,
+        findings:{blocking:0,suggestion:1,decision:0},pending:null,posted:false,review_url:null,report:null,
+        summary:"fake",error:null} + (if $esc then {escalate:true,escalate_reason:"possible blocker"} else {} end)')"
+  done
+fi
+
+jq -cn --arg r "Done.
+$lines" '{type:"result",result:$r}'
